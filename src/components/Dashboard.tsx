@@ -68,6 +68,7 @@ const dolarFuturoColumns: ColumnDef<DolarFuturoData>[] = [
 ];
 
 const SYNC_INTERVAL_MINUTES = 15;
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001').replace(/\/$/, '');
 
 export function Dashboard() {
     const [agricolaData, setAgricolaData] = useState<{
@@ -90,10 +91,10 @@ export function Dashboard() {
     const fetchData = async () => {
         try {
             const [agriRes, finRes, dolarFuturoRes, statusRes] = await Promise.all([
-                fetch('http://localhost:3001/api/agricola'),
-                fetch('http://localhost:3001/api/financeiro'),
-                fetch('http://localhost:3001/api/dolar-futuro'),
-                fetch('http://localhost:3001/api/status')
+                fetch(`${API_BASE_URL}/api/agricola`),
+                fetch(`${API_BASE_URL}/api/financeiro`),
+                fetch(`${API_BASE_URL}/api/dolar-futuro`),
+                fetch(`${API_BASE_URL}/api/status`)
             ]);
 
             if (!agriRes.ok || !finRes.ok || !dolarFuturoRes.ok || !statusRes.ok) {
