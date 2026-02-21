@@ -24,8 +24,14 @@ export function DataTable<T>({ title, data, columns, highlightColumn }: DataTabl
                 <table className="w-full text-sm text-left rtl:text-right text-gray-300">
                     <thead className="text-xs text-gray-400 bg-[#0f1d35] border-b border-[#1e2d4a]">
                         <tr>
-                            {columns.map((col) => (
-                                <th key={String(col.key)} className="px-4 py-3 font-semibold text-center whitespace-nowrap">
+                            {columns.map((col, index) => (
+                                <th 
+                                    key={String(col.key)} 
+                                    className={classNames(
+                                        "px-4 py-3 font-semibold text-center whitespace-nowrap",
+                                        index === 0 ? "sticky left-0 bg-[#0f1d35] z-10 border-r border-[#1e2d4a]" : ""
+                                    )}
+                                >
                                     {col.header}
                                 </th>
                             ))}
@@ -36,11 +42,11 @@ export function DataTable<T>({ title, data, columns, highlightColumn }: DataTabl
                             <tr
                                 key={rowIndex}
                                 className={classNames(
-                                    "border-b border-[#1e2d4a] hover:bg-[#1a2d50] transition-colors",
+                                    "border-b border-[#1e2d4a] hover:bg-[#1a2d50] transition-colors group",
                                     rowIndex % 2 === 0 ? "bg-[#0a192f]" : "bg-[#0d1f38]"
                                 )}
                             >
-                                {columns.map((col) => {
+                                {columns.map((col, colIndex) => {
                                     const val = String(row[col.key as keyof T] ?? '');
                                     const numVal = parseFloat(val.replace(',', '.'));
                                     let isHighlighted = highlightColumn === col.key;
@@ -57,7 +63,14 @@ export function DataTable<T>({ title, data, columns, highlightColumn }: DataTabl
                                     }
 
                                     return (
-                                        <td key={String(col.key)} className={`px-4 py-2 whitespace-nowrap ${colorClass}`}>
+                                        <td 
+                                            key={String(col.key)} 
+                                            className={classNames(
+                                                `px-4 py-2 whitespace-nowrap ${colorClass}`,
+                                                colIndex === 0 ? "sticky left-0 z-10 border-r border-[#1e2d4a]" : "",
+                                                colIndex === 0 ? (rowIndex % 2 === 0 ? "bg-[#0a192f] group-hover:bg-[#1a2d50]" : "bg-[#0d1f38] group-hover:bg-[#1a2d50]") : ""
+                                            )}
+                                        >
                                             {col.render ? col.render(row) : val}
                                         </td>
                                     );
