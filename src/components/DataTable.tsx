@@ -12,9 +12,10 @@ interface DataTableProps<T> {
     data: T[];
     columns: ColumnDef<T>[];
     highlightColumn?: string; // Coluna para destacar vermelho/verde
+    freezeFirstColumn?: boolean;
 }
 
-export function DataTable<T>({ title, data, columns, highlightColumn }: DataTableProps<T>) {
+export function DataTable<T>({ title, data, columns, highlightColumn, freezeFirstColumn = false }: DataTableProps<T>) {
     return (
         <div className="w-full mb-6 bg-[#0a192f] rounded-lg shadow-xl overflow-hidden border border-[#1e2d4a]">
             <div className="bg-[#112240] px-4 py-2 border-b border-[#1e2d4a]">
@@ -24,8 +25,14 @@ export function DataTable<T>({ title, data, columns, highlightColumn }: DataTabl
                 <table className="w-full text-sm text-left rtl:text-right text-gray-300">
                     <thead className="text-xs text-gray-400 bg-[#0f1d35] border-b border-[#1e2d4a]">
                         <tr>
-                            {columns.map((col) => (
-                                <th key={String(col.key)} className="px-4 py-3 font-semibold text-center whitespace-nowrap">
+                            {columns.map((col, colIndex) => (
+                                <th
+                                    key={String(col.key)}
+                                    className={classNames(
+                                        "px-4 py-3 font-semibold text-center whitespace-nowrap",
+                                        freezeFirstColumn && colIndex === 0 && "sticky left-0 z-30 bg-[#0f1d35] border-r border-[#1e2d4a]"
+                                    )}
+                                >
                                     {col.header}
                                 </th>
                             ))}
@@ -40,11 +47,12 @@ export function DataTable<T>({ title, data, columns, highlightColumn }: DataTabl
                                     rowIndex % 2 === 0 ? "bg-[#0a192f]" : "bg-[#0d1f38]"
                                 )}
                             >
-                                {columns.map((col) => {
+                                {columns.map((col, colIndex) => {
                                     const val = String(row[col.key as keyof T] ?? '');
                                     const numVal = parseFloat(val.replace(',', '.'));
-                                    let isHighlighted = highlightColumn === col.key;
+                                    const isHighlighted = highlightColumn === col.key;
                                     let colorClass = "text-center";
+                                    const rowBgClass = rowIndex % 2 === 0 ? "bg-[#0a192f]" : "bg-[#0d1f38]";
 
                                     if (isHighlighted && !isNaN(numVal)) {
                                         if (numVal < 0) {
@@ -57,7 +65,13 @@ export function DataTable<T>({ title, data, columns, highlightColumn }: DataTabl
                                     }
 
                                     return (
-                                        <td key={String(col.key)} className={`px-4 py-2 whitespace-nowrap ${colorClass}`}>
+                                        <td
+                                            key={String(col.key)}
+                                            className={classNames(
+                                                `px-4 py-2 whitespace-nowrap ${colorClass}`,
+                                                freezeFirstColumn && colIndex === 0 && `sticky left-0 z-20 ${rowBgClass} border-r border-[#1e2d4a]`
+                                            )}
+                                        >
                                             {col.render ? col.render(row) : val}
                                         </td>
                                     );

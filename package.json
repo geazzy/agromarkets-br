@@ -1,10 +1,12 @@
 {
-  "name": "farm-dashboard",
+  "name": "agromarkets-br",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:setup": "bash ./scripts/bootstrap-and-dev.sh",
+    "dev:all": "bash ./scripts/start-dev.sh",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

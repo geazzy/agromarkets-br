@@ -23,6 +23,21 @@ interface FinanceiroData {
     fec: string;
 }
 
+interface DolarFuturoData {
+    contrato: string;
+    indice: string;
+    ult: string;
+    varPerc: string;
+    max: string;
+    min: string;
+    fec: string;
+}
+
+interface BackendStatus {
+    lastUpdated: string | null;
+    syncIntervalMinutes: number;
+}
+
 // Colunas
 const sojaColumns: ColumnDef<SojaData>[] = [
     { key: 'contrato', header: 'DATA/CONTRATO' },
@@ -43,6 +58,17 @@ const financeiroColumns: ColumnDef<FinanceiroData>[] = [
     { key: 'fec', header: 'FEC' },
 ];
 
+const dolarFuturoColumns: ColumnDef<DolarFuturoData>[] = [
+    { key: 'contrato', header: 'CONTRATO' },
+    { key: 'ult', header: 'ULT' },
+    { key: 'varPerc', header: 'VAR. [%]' },
+    { key: 'max', header: 'MAX' },
+    { key: 'min', header: 'MIN' },
+    { key: 'fec', header: 'FEC' },
+];
+
+const SYNC_INTERVAL_MINUTES = 15;
+
 export function Dashboard() {
     const [agricolaData, setAgricolaData] = useState<{
         sojaGrao: SojaData[];
@@ -55,25 +81,35 @@ export function Dashboard() {
     });
 
     const [financeiroData, setFinanceiroData] = useState<FinanceiroData[]>([]);
+    const [dolarFuturoData, setDolarFuturoData] = useState<DolarFuturoData[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+    const [syncIntervalMinutes, setSyncIntervalMinutes] = useState<number>(SYNC_INTERVAL_MINUTES);
 
     const fetchData = async () => {
         try {
-            const [agriRes, finRes] = await Promise.all([
+            const [agriRes, finRes, dolarFuturoRes, statusRes] = await Promise.all([
                 fetch('http://localhost:3001/api/agricola'),
-                fetch('http://localhost:3001/api/financeiro')
+                fetch('http://localhost:3001/api/financeiro'),
+                fetch('http://localhost:3001/api/dolar-futuro'),
+                fetch('http://localhost:3001/api/status')
             ]);
 
-            if (!agriRes.ok || !finRes.ok) {
+            if (!agriRes.ok || !finRes.ok || !dolarFuturoRes.ok || !statusRes.ok) {
                 throw new Error('Failed to fetch data');
             }
 
             const agriData = await agriRes.json();
             const finData = await finRes.json();
+            const dolarFuturoApiData = await dolarFuturoRes.json();
+            const statusData: BackendStatus = await statusRes.json();
 
             setAgricolaData(agriData);
             setFinanceiroData(finData);
+            setDolarFuturoData(dolarFuturoApiData);
+            setLastSyncAt(statusData.lastUpdated ? new Date(statusData.lastUpdated) : null);
+            setSyncIntervalMinutes(statusData.syncIntervalMinutes);
             setError(null);
         } catch (err) {
             console.error(err);
@@ -85,8 +121,7 @@ export function Dashboard() {
 
     useEffect(() => {
         fetchData();
-        // Polling a cada 5 minutos
-        const interval = setInterval(fetchData, 5 * 60 * 1000);
+        const interval = setInterval(fetchData, SYNC_INTERVAL_MINUTES * 60 * 1000);
         return () => clearInterval(interval);
     }, []);
 
@@ -113,20 +148,33 @@ export function Dashboard() {
             <header className="mb-8 border-b-2 border-[#1e2d4a] pb-4">
                 <h1 className="text-3xl font-extrabold text-[#64ffda]">Mercado Agrícola & Financeiro</h1>
                 <p className="text-gray-400 mt-2">Acompanhamento contínuo de commodities e indicadores globais.</p>
+                <div className="mt-3 text-sm text-gray-400 flex flex-col sm:flex-row sm:items-center sm:gap-6">
+                    <span>
+                        Última sincronização:{' '}
+                        <strong className="text-gray-200 font-semibold">
+                            {lastSyncAt ? lastSyncAt.toLocaleString('pt-BR') : 'N/A'}
+                        </strong>
+                    </span>
+                    <span>
+                        Intervalo de sincronização:{' '}
+                        <strong className="text-gray-200 font-semibold">{syncIntervalMinutes} minutos</strong>
+                    </span>
+                </div>
             </header>
 
             <main className="grid grid-cols-1 gap-12">
                 {/* SOJA GRÃO */}
                 <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
                     <DataTable
-                        title="SOJA GRÃO"
+                        title="SOJA GRÃO (ZS)"
                         data={agricolaData.sojaGrao}
                         columns={sojaColumns}
                         highlightColumn="dif"
+                        freezeFirstColumn
                     />
                     <div className="w-full h-full min-h-[400px] bg-[#0a192f] rounded-lg shadow-xl overflow-hidden border border-[#1e2d4a] flex flex-col">
                         <div className="bg-[#112240] px-4 py-2 border-b border-[#1e2d4a]">
-                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - SOJA GRÃO</h3>
+                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - SOJA GRÃO (ZS)</h3>
                         </div>
                         <div className="flex-grow p-4">
                             <ForwardCurveChart data={agricolaData.sojaGrao} />
@@ -137,14 +185,15 @@ export function Dashboard() {
                 {/* FARELO DE SOJA */}
                 <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
                     <DataTable
-                        title="FARELO DE SOJA"
+                        title="FARELO DE SOJA (ZM)"
                         data={agricolaData.fareloSoja}
                         columns={sojaColumns}
                         highlightColumn="dif"
+                        freezeFirstColumn
                     />
                     <div className="w-full h-full min-h-[400px] bg-[#0a192f] rounded-lg shadow-xl overflow-hidden border border-[#1e2d4a] flex flex-col">
                         <div className="bg-[#112240] px-4 py-2 border-b border-[#1e2d4a]">
-                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - FARELO DE SOJA</h3>
+                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - FARELO DE SOJA (ZM)</h3>
                         </div>
                         <div className="flex-grow p-4">
                             <ForwardCurveChart data={agricolaData.fareloSoja} />
@@ -155,17 +204,37 @@ export function Dashboard() {
                 {/* ÓLEO DE SOJA */}
                 <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
                     <DataTable
-                        title="ÓLEO DE SOJA"
+                        title="ÓLEO DE SOJA (ZL)"
                         data={agricolaData.oleoSoja}
                         columns={sojaColumns}
                         highlightColumn="dif"
+                        freezeFirstColumn
                     />
                     <div className="w-full h-full min-h-[400px] bg-[#0a192f] rounded-lg shadow-xl overflow-hidden border border-[#1e2d4a] flex flex-col">
                         <div className="bg-[#112240] px-4 py-2 border-b border-[#1e2d4a]">
-                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - ÓLEO DE SOJA</h3>
+                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - ÓLEO DE SOJA (ZL)</h3>
                         </div>
                         <div className="flex-grow p-4">
                             <ForwardCurveChart data={agricolaData.oleoSoja} />
+                        </div>
+                    </div>
+                </section>
+
+                {/* DÓLAR FUTURO */}
+                <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                    <DataTable
+                        title="DÓLAR FUTURO"
+                        data={dolarFuturoData}
+                        columns={dolarFuturoColumns}
+                        highlightColumn="varPerc"
+                        freezeFirstColumn
+                    />
+                    <div className="w-full h-full min-h-[400px] bg-[#0a192f] rounded-lg shadow-xl overflow-hidden border border-[#1e2d4a] flex flex-col">
+                        <div className="bg-[#112240] px-4 py-2 border-b border-[#1e2d4a]">
+                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - DÓLAR</h3>
+                        </div>
+                        <div className="flex-grow p-4">
+                            <ForwardCurveChart data={dolarFuturoData} />
                         </div>
                     </div>
                 </section>

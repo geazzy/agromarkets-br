@@ -2,34 +2,32 @@
 
 Para substituir os dados mockados do seu MVP por **dados reais** (ou com um pequeno atraso de 15 minutos, padrão em mercados financeiros gratuitos), você precisará consumir APIs externas.
 
-Como o seu dashboard possui tanto **Commodities de Chicago (CBOT)** (como Soja, Farelo e Óleo) quanto **Indicadores Financeiros Brazileiros e Globais** (Dólar, PTAX, Ouro, DXY), recomendo as seguintes fontes:
+Como o seu dashboard possui tanto **Commodities de Chicago (CBOT)** (como Soja, Farelo e Óleo) quanto **Indicadores Financeiros Brasileiros e Globais** (Dólar, Ouro, DXY), o plano adotado no projeto é:
 
-### 1. Yahoo Finance API (🌟 Mais recomendada para MVPs)
-Esta é a fonte gratuita mais rica e fácil de usar para acessar ativos globais, incluindo os contratos futuros agrícolas (Chicago) e moedas.
+### 1. Yahoo Finance API (curva futura e fallback)
+Esta é a fonte usada para ativos globais, incluindo os contratos futuros agrícolas de Chicago e a curva de dólar futuro.
 *   **Como acessar:** Não possui uma API oficial, mas a comunidade mantém bibliotecas excelentes e muito estáveis. Se você criar um backend em Node.js, pode usar a lib `yahoo-finance2`. Em Python, usa-se a `yfinance`.
-*   **Tickers úteis para o seu Dashboard:**
+*   **Tickers utilizados no projeto:**
     *   **Soja Grão (CBOT):** `ZS=F` (Contrato futuro contínuo)
     *   **Farelo de Soja:** `ZM=F`
     *   **Óleo de Soja:** `ZL=F`
-    *   **Dólar/Real:** `BRL=X`
+    *   **Dólar/Real (fallback):** `BRL=X`
     *   **Ouro:** `GC=F`
     *   **Índice Dólar (DXY):** `DX-Y.NYB`
 
-### 2. HG Brasil Finance (🇧🇷 Foco no Brasil)
-Excelente API com um plano gratuito amigável, muito voltada para o mercado brasileiro. É a forma mais fácil de pegar cotações de moedas e taxas do BCB sem complicação.
-*   **Link:** [hgbrasil.com](https://hgbrasil.com/status/finance)
-*   **Útil para:** Pegar a cotação exata do Dólar Comercial (`USD`), Dólar Turismo, Euro, Selic, CDI e moedas diversas em tempo real.
-*   **Limitação:** Não fornece os contratos futuros agrícolas de Chicago (CBOT).
-
-### 3. Brapi (Mercado B3)
-Uma excelente API brasileira (com plano grátis) baseada em dados da B3 (Bolsa Brasileira).
+### 2. Brapi (spot USD/BRL primário)
+API brasileira usada como fonte primária para o spot de dólar comercial (USD/BRL) no backend.
 *   **Link:** [brapi.dev](https://brapi.dev/)
-*   **Útil para:** Se no futuro você quiser alterar os contratos de Chicago para contratos futuros negociados no Brasil na B3, como o Milho B3 (Ticker: `CCM`), Boi Gordo (`BGI`), ou a própria Soja B3 (`SJC`).
+*   **Útil para:** Cotação de moedas/câmbio com autenticação por chave, sem expor segredo no frontend.
+*   **No projeto atual:** prioridade para `USD/BRL` spot.
 
-### 4. Alpha Vantage / Finnhub
+### 3. Alpha Vantage / Finnhub
 APIs globais muito consolidadas no mercado financeiro para Desenvolvedores.
 *   Ambas fornecem chaves gratuitas (com limite de requisições por minuto - normalmente 5 a 25 *calls*/min).
 *   Fornecem endpoints específicos para Câmbio (Forex) e Commodities.
+
+### 4. HG Brasil
+Não será utilizada neste projeto.
 
 ---
 
@@ -41,5 +39,5 @@ Se você tentar fazer requisições dessas APIs financeiras **diretamente pelo s
 
 **O caminho ideal é:**
 1. Criar um servidor backend bem simples (ex: `Node.js + Express`).
-2. O servidor backend faz a requisição para a API do *Yahoo Finance* ou *HG Brasil* a cada X minutos e salva num cache.
+2. O servidor backend faz a requisição para a Brapi (spot USD/BRL) e Yahoo Finance (curva/fallback) a cada X minutos e salva num cache.
 3. O seu frontend em React (o código que fizemos) faz um `fetch` ou um Polling para o **seu backend**, recebendo os dados limpos e já formatados na estrutura `SojaData` e `FinanceiroData`.

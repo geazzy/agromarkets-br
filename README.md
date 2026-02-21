@@ -1,3 +1,48 @@
+# AgroMarkets BR
+
+## Executar projeto (frontend + backend)
+
+Na raiz do projeto:
+
+```bash
+npm run dev:all
+```
+
+Se quiser instalar tudo automaticamente e já iniciar frontend + backend:
+
+```bash
+npm run dev:setup
+```
+
+Esse comando inicia:
+
+- frontend (Vite)
+- backend (Node/Express)
+
+Para encerrar os dois, use `Ctrl+C`.
+
+## Configuração do backend (câmbio e curva)
+
+O backend usa:
+
+- **Brapi** como fonte primária do spot `USD/BRL`
+- **Yahoo Finance** para curva de dólar futuro e fallback de spot
+
+Variáveis de ambiente suportadas no backend:
+
+- `PORT` (default: `3001`)
+- `SYNC_INTERVAL_MINUTES` (default: `15`)
+- `PROVIDER_TIMEOUT_MS` (default: `8000`)
+- `BRAPI_BASE_URL` (default: `https://brapi.dev`)
+- `BRAPI_API_KEY` (opcional, mas recomendada em produção)
+
+Exemplo:
+
+```bash
+cd backend
+BRAPI_API_KEY=sua_chave_aqui npm run dev
+```
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
