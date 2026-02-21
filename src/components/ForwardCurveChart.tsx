@@ -10,7 +10,7 @@ import {
 } from 'recharts';
 
 interface ForwardCurveChartProps {
-    data: any[];
+    data: { contrato: string; ult: string }[];
 }
 
 export function ForwardCurveChart({ data }: ForwardCurveChartProps) {
@@ -75,7 +75,7 @@ export function ForwardCurveChart({ data }: ForwardCurveChartProps) {
                 <Tooltip
                     contentStyle={{ backgroundColor: '#112240', borderColor: '#1e2d4a', color: '#e6f1ff', borderRadius: '4px' }}
                     itemStyle={{ color: '#64ffda' }}
-                    formatter={(value: any) => [`${Number(value).toFixed(2)}`, "Cotação"]}
+                    formatter={(value: unknown) => [`${Number(value).toFixed(2)}`, "Cotação"]}
                     labelStyle={{ color: '#8892b0', marginBottom: '8px', fontWeight: 'bold' }}
                 />
                 <Line

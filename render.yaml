@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: agromarkets-br-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/status
+    plan: free
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: PORT
+        value: 10000
+      - key: SYNC_INTERVAL_MINUTES
+        value: 15
+      - key: PROVIDER_TIMEOUT_MS
+        value: 8000
+      - key: BRAPI_BASE_URL
+        value: https://brapi.dev
+      - key: BRAPI_API_KEY
+        sync: false
