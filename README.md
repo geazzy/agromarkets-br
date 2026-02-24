@@ -81,8 +81,46 @@ Backend (`backend/.env.example`):
 
 O backend usa:
 
-- **Yahoo Finance** para spot `USD/BRL`, dólar futuro e demais indicadores
+- **Yahoo Finance** para commodities agrícolas, câmbio, índices e contratos futuros
 - **PTAX (BCB/OData)** para indicador oficial de dólar PTAX
+
+### APIs utilizadas no projeto
+
+#### 1) APIs internas (backend do projeto)
+
+Endpoints expostos pelo backend (`backend/server.js`) e consumidos pelo frontend:
+
+- `GET /api/agricola`
+- `GET /api/financeiro`
+- `GET /api/dolar-futuro`
+- `GET /api/status`
+
+#### 2) APIs externas e fontes de mercado
+
+##### Yahoo Finance (via biblioteca `yahoo-finance2` no backend)
+
+Ativos consultados hoje no projeto:
+
+- Commodities agrícolas (CBOT):
+  - `ZS=F` (Soja grão)
+  - `ZM=F` (Farelo de soja)
+  - `ZL=F` (Óleo de soja)
+- Câmbio e índices:
+  - `BRL=X` (USD/BRL comercial)
+  - `EURBRL=X` (EUR/BRL)
+  - `EURUSD=X` (base para cálculo de USD/EUR)
+  - `DX-Y.NYB` (DXY)
+  - `GC=F` (Ouro)
+- Dólar futuro:
+  - B3: `DOL{Mês}{Ano}.SA` e `WDO{Mês}{Ano}.SA`
+  - CME (fallback): `6L{Mês}{Ano}.CME`
+
+##### PTAX (Banco Central do Brasil - OData)
+
+- Endpoint usado no backend para série diária da PTAX:
+  - `https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo(...)`
+
+Obs.: o backend atualiza e cacheia os dados periodicamente (polling), e o frontend consulta apenas as APIs internas acima.
 
 Variáveis de ambiente suportadas no backend:
 
