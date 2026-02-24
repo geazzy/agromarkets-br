@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { DataTable } from './DataTable';
 import { ForwardCurveChart } from './ForwardCurveChart';
 import type { ColumnDef } from './DataTable';
@@ -48,7 +48,7 @@ const financeiroColumns: ColumnDef<FinanceiroData>[] = [
     { key: 'fec', header: 'FEC' },
 ];
 
-const SYNC_INTERVAL_MINUTES = 15;
+const DEFAULT_SYNC_INTERVAL_MINUTES = 5;
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001').replace(/\/$/, '');
 
 export function Dashboard() {
@@ -66,9 +66,9 @@ export function Dashboard() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
-    const [syncIntervalMinutes, setSyncIntervalMinutes] = useState<number>(SYNC_INTERVAL_MINUTES);
+    const [syncIntervalMinutes, setSyncIntervalMinutes] = useState<number>(DEFAULT_SYNC_INTERVAL_MINUTES);
 
-    const fetchData = async () => {
+    const fetchData = useCallback(async () => {
         try {
             const [agriRes, finRes, statusRes] = await Promise.all([
                 fetch(`${API_BASE_URL}/api/agricola`),
@@ -95,13 +95,16 @@ export function Dashboard() {
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, SYNC_INTERVAL_MINUTES * 60 * 1000);
+    }, [fetchData]);
+
+    useEffect(() => {
+        const interval = setInterval(fetchData, syncIntervalMinutes * 60 * 1000);
         return () => clearInterval(interval);
-    }, []);
+    }, [fetchData, syncIntervalMinutes]);
 
     if (loading) {
         return (

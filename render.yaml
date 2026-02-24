@@ -13,8 +13,14 @@ services:
       - key: PORT
         value: 10000
       - key: SYNC_INTERVAL_MINUTES
-        value: 15
+        value: 5
       - key: DOLAR_FUTURO_CONTRACT_COUNT
         value: 3
       - key: PROVIDER_TIMEOUT_MS
         value: 8000
+      - key: YAHOO_MIN_REQUEST_INTERVAL_MS
+        value: 500
+      - key: YAHOO_MAX_RETRIES
+        value: 4
+      - key: YAHOO_RETRY_BASE_DELAY_MS
+        value: 1500

@@ -12,6 +12,9 @@ const PORT = process.env.PORT || 3001;
 const SYNC_INTERVAL_MINUTES = Number(process.env.SYNC_INTERVAL_MINUTES || 15);
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 8000);
 const DOLAR_FUTURO_CONTRACT_COUNT = Number(process.env.DOLAR_FUTURO_CONTRACT_COUNT || 3);
+const YAHOO_MIN_REQUEST_INTERVAL_MS = Number(process.env.YAHOO_MIN_REQUEST_INTERVAL_MS || 350);
+const YAHOO_MAX_RETRIES = Number(process.env.YAHOO_MAX_RETRIES || 3);
+const YAHOO_RETRY_BASE_DELAY_MS = Number(process.env.YAHOO_RETRY_BASE_DELAY_MS || 1200);
 
 app.use(cors());
 
@@ -66,6 +69,54 @@ const toNumberOrNull = (value) => {
     }
     return null;
 };
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+let yahooLastRequestAt = 0;
+let yahooRequestChain = Promise.resolve();
+
+function isYahooRateLimitError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('429')
+        || message.includes('too many requests')
+        || message.includes('failed to get crumb');
+}
+
+async function throttledYahooQuote(ticker) {
+    const scheduled = yahooRequestChain.then(async () => {
+        const now = Date.now();
+        const waitMs = Math.max(0, yahooLastRequestAt + YAHOO_MIN_REQUEST_INTERVAL_MS - now);
+        if (waitMs > 0) {
+            await sleep(waitMs);
+        }
+        yahooLastRequestAt = Date.now();
+        return yahooFinance.quote(ticker);
+    });
+
+    yahooRequestChain = scheduled.catch(() => undefined);
+    return scheduled;
+}
+
+async function fetchYahooQuote(ticker) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= YAHOO_MAX_RETRIES; attempt += 1) {
+        try {
+            return await throttledYahooQuote(ticker);
+        } catch (error) {
+            lastError = error;
+
+            if (!isYahooRateLimitError(error) || attempt === YAHOO_MAX_RETRIES) {
+                break;
+            }
+
+            const backoffMs = YAHOO_RETRY_BASE_DELAY_MS * (attempt + 1);
+            await sleep(backoffMs);
+        }
+    }
+
+    throw lastError;
+}
 
 const firstValidNumber = (...values) => {
     for (const value of values) {
@@ -159,7 +210,7 @@ function getCurrentContractInfo(baseSymbol) {
 
 const fetchAgriData = async (ticker, baseSymbol) => {
     try {
-        const quote = await yahooFinance.quote(ticker);
+        const quote = await fetchYahooQuote(ticker);
         if (!quote || !isValidNumber(quote.regularMarketPrice)) {
             return [];
         }
@@ -180,30 +231,25 @@ const fetchAgriData = async (ticker, baseSymbol) => {
         const futureTickers = getFutureTickers(baseSymbol, 18);
         const results = [atual];
 
-        const quotePromises = futureTickers.map(ft =>
-            yahooFinance.quote(ft.ticker)
-                .then(quoteFuturo => {
-                    const difFuturo = quoteFuturo.regularMarketChange || 0;
-                    return {
-                        contrato: ft.name,
-                        ult: formatValue(quoteFuturo.regularMarketPrice),
-                        max: formatValue(quoteFuturo.regularMarketDayHigh),
-                        min: formatValue(quoteFuturo.regularMarketDayLow),
-                        fec: formatValue(quoteFuturo.regularMarketPreviousClose),
-                        abe: formatValue(quoteFuturo.regularMarketOpen),
-                        dif: formatValue(difFuturo)
-                    };
-                })
-                .catch(e => {
-                    console.error(`Error fetching future ${ft.ticker}:`, e.message);
-                    return null;
-                })
-        );
+        for (const ft of futureTickers) {
+            try {
+                const quoteFuturo = await fetchYahooQuote(ft.ticker);
+                if (!quoteFuturo || !isValidNumber(quoteFuturo.regularMarketPrice)) {
+                    continue;
+                }
 
-        const futureQuotes = await Promise.all(quotePromises);
-        for (const fq of futureQuotes) {
-            if (fq) {
-                results.push(fq);
+                const difFuturo = quoteFuturo.regularMarketChange || 0;
+                results.push({
+                    contrato: ft.name,
+                    ult: formatValue(quoteFuturo.regularMarketPrice),
+                    max: formatValue(quoteFuturo.regularMarketDayHigh),
+                    min: formatValue(quoteFuturo.regularMarketDayLow),
+                    fec: formatValue(quoteFuturo.regularMarketPreviousClose),
+                    abe: formatValue(quoteFuturo.regularMarketOpen),
+                    dif: formatValue(difFuturo)
+                });
+            } catch (e) {
+                console.error(`Error fetching future ${ft.ticker}:`, e.message);
             }
         }
 
@@ -216,7 +262,7 @@ const fetchAgriData = async (ticker, baseSymbol) => {
 
 const fetchFinanceData = async (ticker, name) => {
     try {
-        const quote = await yahooFinance.quote(ticker);
+        const quote = await fetchYahooQuote(ticker);
         if (!quote || !isValidNumber(quote.regularMarketPrice)) {
             return null;
         }
@@ -383,13 +429,18 @@ async function fetchDolarFuturoB3(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
     const lookupWindow = Math.max(monthsAhead * 6, monthsAhead);
     const contracts = getNextFinancialContracts(lookupWindow);
     const prefixes = ['DOL', 'WDO'];
+    const results = [];
 
-    const contractQuotes = await Promise.all(contracts.map(async (contract) => {
+    for (const contract of contracts) {
+        if (results.length >= monthsAhead) {
+            break;
+        }
+
         for (const prefix of prefixes) {
             const ticker = `${prefix}${contract.code}${contract.year}.SA`;
 
             try {
-                const quote = await yahooFinance.quote(ticker);
+                const quote = await fetchYahooQuote(ticker);
                 if (!quote) {
                     continue;
                 }
@@ -400,35 +451,39 @@ async function fetchDolarFuturoB3(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
                     continue;
                 }
 
-                return normalizeDolarFuturoFinanceiroRow(contract.label, {
+                results.push(normalizeDolarFuturoFinanceiroRow(contract.label, {
                     price: quote.regularMarketPrice,
                     varPerc: quote.regularMarketChangePercent || 0,
                     high: quote.regularMarketDayHigh,
                     low: quote.regularMarketDayLow,
                     previousClose: quote.regularMarketPreviousClose
-                });
+                }));
+                break;
             } catch (e) {
                 console.error(`Error fetching ${ticker}:`, e.message);
             }
         }
+    }
 
-        return null;
-    }));
-
-    return contractQuotes.filter(Boolean);
+    return results;
 }
 
 async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
     const lookupWindow = Math.max(monthsAhead * 6, monthsAhead);
     const contracts = getNextFinancialContracts(lookupWindow);
+    const results = [];
 
-    const contractQuotes = await Promise.all(contracts.map(async (contract) => {
+    for (const contract of contracts) {
+        if (results.length >= monthsAhead) {
+            break;
+        }
+
         const ticker = `6L${contract.code}${contract.year}.CME`;
 
         try {
-            const quote = await yahooFinance.quote(ticker);
+            const quote = await fetchYahooQuote(ticker);
             if (!quote) {
-                return null;
+                continue;
             }
 
             const brlUsd = quote.regularMarketPrice;
@@ -437,7 +492,7 @@ async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
             const brlUsdLow = quote.regularMarketDayLow;
 
             if (!isValidNumber(brlUsd)) {
-                return null;
+                continue;
             }
 
             const usdBrl = 1 / brlUsd;
@@ -445,25 +500,24 @@ async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
             const usdBrlHigh = brlUsdLow ? 1 / brlUsdLow : null;
             const usdBrlLow = brlUsdHigh ? 1 / brlUsdHigh : null;
 
-            return normalizeDolarFuturoFinanceiroRow(contract.label, {
+            results.push(normalizeDolarFuturoFinanceiroRow(contract.label, {
                 price: usdBrl,
                 varPerc: usdBrlPrev ? toPercent(usdBrl, usdBrlPrev) : 0,
                 high: usdBrlHigh,
                 low: usdBrlLow,
                 previousClose: usdBrlPrev
-            });
+            }));
         } catch (e) {
             console.error(`Error fetching ${ticker}:`, e.message);
-            return null;
         }
-    }));
+    }
 
-    return contractQuotes.filter(Boolean);
+    return results;
 }
 
 async function fetchUsdBrlSpotFallback() {
     try {
-        const quote = await yahooFinance.quote('BRL=X');
+        const quote = await fetchYahooQuote('BRL=X');
 
         if (!quote || !isValidNumber(quote.regularMarketPrice)) {
             return null;
@@ -488,7 +542,7 @@ async function fetchUsdBrlSpotData() {
 
 async function fetchUsdEurData() {
     try {
-        const quote = await yahooFinance.quote('EURUSD=X');
+        const quote = await fetchYahooQuote('EURUSD=X');
 
         if (!quote || !isValidNumber(quote.regularMarketPrice)) {
             return null;
@@ -538,6 +592,12 @@ async function fetchDolarFuturoFinanceiroRows(count = DOLAR_FUTURO_CONTRACT_COUN
 }
 
 const updateCache = async () => {
+    if (updateCache.isRunning) {
+        console.log(`[${new Date().toISOString()}] Previous cache update still running. Skipping this cycle.`);
+        return;
+    }
+
+    updateCache.isRunning = true;
     console.log(`[${new Date().toISOString()}] Fetching new data from Yahoo Finance...`);
 
     try {
@@ -548,14 +608,11 @@ const updateCache = async () => {
         const oleoSoja = await fetchAgriData('ZL=F', 'ZL');
         const dolarFuturo = await fetchDolarFuturoFinanceiroRows(DOLAR_FUTURO_CONTRACT_COUNT);
 
-        const financeiroPromises = [
-            fetchFinanceData('EURBRL=X', 'Real / Euro'),
-            fetchUsdEurData(),
-            fetchFinanceData('DX-Y.NYB', 'DXY'),
-            fetchFinanceData('GC=F', 'GOLD')
-        ];
-
-        const financeiroResults = await Promise.all(financeiroPromises);
+        const financeiroResults = [];
+        financeiroResults.push(await fetchFinanceData('EURBRL=X', 'Real / Euro'));
+        financeiroResults.push(await fetchUsdEurData());
+        financeiroResults.push(await fetchFinanceData('DX-Y.NYB', 'DXY'));
+        financeiroResults.push(await fetchFinanceData('GC=F', 'GOLD'));
 
         const usdFinanceRow = usdSpot
             ? normalizeUsdBrlFinanceiroRow(usdSpot)
@@ -580,8 +637,12 @@ const updateCache = async () => {
         console.log(`[${new Date().toISOString()}] Cache updated successfully.`);
     } catch (e) {
         console.error('Error updating cache:', e.message);
+    } finally {
+        updateCache.isRunning = false;
     }
 };
+
+updateCache.isRunning = false;
 
 updateCache();
 setInterval(updateCache, SYNC_INTERVAL_MINUTES * 60 * 1000);
