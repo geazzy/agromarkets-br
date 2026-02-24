@@ -92,7 +92,6 @@ Endpoints expostos pelo backend (`backend/server.js`) e consumidos pelo frontend
 
 - `GET /api/agricola`
 - `GET /api/financeiro`
-- `GET /api/dolar-futuro`
 - `GET /api/status`
 
 #### 2) APIs externas e fontes de mercado

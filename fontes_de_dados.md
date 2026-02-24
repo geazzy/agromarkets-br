@@ -8,7 +8,6 @@ O frontend React não consulta provedores externos diretamente. Ele consome apen
 
 - `GET /api/agricola`
 - `GET /api/financeiro`
-- `GET /api/dolar-futuro`
 - `GET /api/status`
 
 ## 2) APIs externas utilizadas pelo backend

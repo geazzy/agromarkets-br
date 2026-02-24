@@ -25,7 +25,6 @@ let cache = {
         oleoSoja: []
     },
     financeiro: [],
-    dolarFuturo: [],
     lastUpdated: null
 };
 
@@ -631,7 +630,6 @@ const updateCache = async () => {
             oleoSoja: oleoSoja.length ? oleoSoja : cache.agricola.oleoSoja
         };
         cache.financeiro = financeiro.length ? financeiro : cache.financeiro;
-        cache.dolarFuturo = [];
         cache.lastUpdated = new Date();
 
         console.log(`[${new Date().toISOString()}] Cache updated successfully.`);
@@ -653,10 +651,6 @@ app.get('/api/agricola', (req, res) => {
 
 app.get('/api/financeiro', (req, res) => {
     res.json(cache.financeiro);
-});
-
-app.get('/api/dolar-futuro', (req, res) => {
-    res.json(cache.dolarFuturo);
 });
 
 app.get('/api/status', (req, res) => {
