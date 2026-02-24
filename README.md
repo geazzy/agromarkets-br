@@ -75,6 +75,7 @@ Backend (`backend/.env.example`):
 - `PORT`
 - `SYNC_INTERVAL_MINUTES`
 - `PROVIDER_TIMEOUT_MS`
+- `AGRI_TOTAL_CONTRACTS`
 - `DOLAR_FUTURO_CONTRACT_COUNT`
 
 ## Configuração do backend (câmbio e curva)
@@ -111,8 +112,7 @@ Ativos consultados hoje no projeto:
   - `DX-Y.NYB` (DXY)
   - `GC=F` (Ouro)
 - Dólar futuro:
-  - B3: `DOL{Mês}{Ano}.SA` e `WDO{Mês}{Ano}.SA`
-  - CME (fallback): `6L{Mês}{Ano}.CME`
+  - CME: `6L{Mês}{Ano}.CME` (somente)
 
 ##### PTAX (Banco Central do Brasil - OData)
 
@@ -126,6 +126,7 @@ Variáveis de ambiente suportadas no backend:
 - `PORT` (default: `3001`)
 - `SYNC_INTERVAL_MINUTES` (default: `15`)
 - `PROVIDER_TIMEOUT_MS` (default: `8000`)
+- `AGRI_TOTAL_CONTRACTS` (default: `3`, total de contratos por commodity, incluindo o atual)
 - `DOLAR_FUTURO_CONTRACT_COUNT` (default: `3`)
 
 Exemplo:

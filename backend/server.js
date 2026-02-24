@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 3001;
 const SYNC_INTERVAL_MINUTES = Number(process.env.SYNC_INTERVAL_MINUTES || 15);
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 8000);
 const DOLAR_FUTURO_CONTRACT_COUNT = Number(process.env.DOLAR_FUTURO_CONTRACT_COUNT || 3);
+const AGRI_TOTAL_CONTRACTS = Number(process.env.AGRI_TOTAL_CONTRACTS || 3);
 const YAHOO_MIN_REQUEST_INTERVAL_MS = Number(process.env.YAHOO_MIN_REQUEST_INTERVAL_MS || 350);
 const YAHOO_MAX_RETRIES = Number(process.env.YAHOO_MAX_RETRIES || 3);
 const YAHOO_RETRY_BASE_DELAY_MS = Number(process.env.YAHOO_RETRY_BASE_DELAY_MS || 1200);
@@ -71,8 +72,45 @@ const toNumberOrNull = (value) => {
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+const toSafeErrorMessage = (error) => String(error?.message || 'unknown_error');
+
+function logEvent(level, event, data = {}) {
+    const payload = {
+        ts: new Date().toISOString(),
+        level,
+        event,
+        ...data
+    };
+    const line = JSON.stringify(payload);
+
+    if (level === 'error') {
+        console.error(line);
+        return;
+    }
+
+    if (level === 'warn') {
+        console.warn(line);
+        return;
+    }
+
+    console.log(line);
+}
+
+function createCycleId() {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function extractHttpStatusFromError(error) {
+    const message = String(error?.message || '');
+    const statusFromHttp = message.match(/http\s*(\d{3})/i);
+    const statusFromStatus = message.match(/status\s*(\d{3})/i);
+    const status = statusFromHttp?.[1] || statusFromStatus?.[1] || null;
+    return status ? Number(status) : null;
+}
+
 let yahooLastRequestAt = 0;
 let yahooRequestChain = Promise.resolve();
+let activeCycleStats = null;
 
 function isYahooRateLimitError(error) {
     const message = String(error?.message || '').toLowerCase();
@@ -100,16 +138,60 @@ async function fetchYahooQuote(ticker) {
     let lastError = null;
 
     for (let attempt = 0; attempt <= YAHOO_MAX_RETRIES; attempt += 1) {
+        if (activeCycleStats) {
+            activeCycleStats.yahooRequests += 1;
+        }
+
         try {
-            return await throttledYahooQuote(ticker);
+            const quote = await throttledYahooQuote(ticker);
+
+            if (activeCycleStats) {
+                activeCycleStats.yahooSuccess += 1;
+            }
+
+            return quote;
         } catch (error) {
             lastError = error;
+            const isRateLimited = isYahooRateLimitError(error);
 
-            if (!isYahooRateLimitError(error) || attempt === YAHOO_MAX_RETRIES) {
+            if (activeCycleStats) {
+                if (isRateLimited) {
+                    activeCycleStats.yahoo429 += 1;
+                }
+            }
+
+            if (!isRateLimited || attempt === YAHOO_MAX_RETRIES) {
+                if (activeCycleStats) {
+                    activeCycleStats.yahooFailures += 1;
+                }
+
+                logEvent('error', 'yahoo_fetch_failed', {
+                    cycleId: activeCycleStats?.cycleId || null,
+                    ticker,
+                    attempt: attempt + 1,
+                    maxAttempts: YAHOO_MAX_RETRIES + 1,
+                    status: extractHttpStatusFromError(error),
+                    rateLimited: isRateLimited,
+                    message: toSafeErrorMessage(error)
+                });
                 break;
             }
 
             const backoffMs = YAHOO_RETRY_BASE_DELAY_MS * (attempt + 1);
+
+            if (activeCycleStats) {
+                activeCycleStats.yahooRetries += 1;
+            }
+
+            logEvent('warn', 'yahoo_fetch_retry', {
+                cycleId: activeCycleStats?.cycleId || null,
+                ticker,
+                attempt: attempt + 1,
+                maxAttempts: YAHOO_MAX_RETRIES + 1,
+                status: extractHttpStatusFromError(error),
+                backoffMs,
+                message: toSafeErrorMessage(error)
+            });
             await sleep(backoffMs);
         }
     }
@@ -149,39 +231,43 @@ function getValidMonths(baseSymbol) {
     return CONTRACT_MONTHS[baseSymbol] || CONTRACT_MONTHS.DEFAULT;
 }
 
-function getFutureTickers(baseSymbol, monthsAhead) {
+function getCurrentContractTicker(baseSymbol) {
+    const currentContract = getCurrentContractInfo(baseSymbol);
+    return `${baseSymbol}${currentContract.c}${currentContract.year}.CBT`;
+}
+
+function getFutureTickers(baseSymbol, contractsAhead = 2) {
     const tickers = [];
-    const startDate = new Date();
+    const currentDate = new Date();
     const validMonths = getValidMonths(baseSymbol);
+    const currentTicker = getCurrentContractTicker(baseSymbol);
+    let year = currentDate.getFullYear();
+    let guard = 0;
 
-    const endDate = new Date(startDate);
-    endDate.setMonth(endDate.getMonth() + monthsAhead);
+    while (tickers.length < contractsAhead && guard < 10) {
+        const yearShort = year.toString().slice(-2);
 
-    let currentDate = new Date(startDate);
+        for (const vm of validMonths) {
+            if (year === currentDate.getFullYear() && vm.m < currentDate.getMonth() + 1) {
+                continue;
+            }
 
-    while (currentDate <= endDate) {
-        const year = currentDate.getFullYear().toString().slice(-2);
+            const tickerStr = `${baseSymbol}${vm.c}${yearShort}.CBT`;
+            if (tickerStr === currentTicker) {
+                continue;
+            }
 
-        const validForYear = validMonths.filter(v =>
-            (currentDate.getFullYear() === startDate.getFullYear() && v.m >= startDate.getMonth() + 1) ||
-            (currentDate.getFullYear() > startDate.getFullYear())
-        );
-
-        for (const vm of validForYear) {
-            const contractDate = new Date(currentDate.getFullYear(), vm.m - 1, 1);
-            if (contractDate > endDate) break;
-
-            const tickerStr = `${baseSymbol}${vm.c}${year}.CBT`;
             if (!tickers.find(t => t.ticker === tickerStr)) {
-                tickers.push({
-                    ticker: tickerStr,
-                    name: `${vm.n}/${year} (${vm.c})`
-                });
+                tickers.push({ ticker: tickerStr, name: `${vm.n}/${yearShort} (${vm.c})` });
+            }
+
+            if (tickers.length >= contractsAhead) {
+                break;
             }
         }
 
-        currentDate.setFullYear(currentDate.getFullYear() + 1);
-        currentDate.setMonth(0);
+        year += 1;
+        guard += 1;
     }
 
     return tickers;
@@ -207,7 +293,7 @@ function getCurrentContractInfo(baseSymbol) {
     };
 }
 
-const fetchAgriData = async (ticker, baseSymbol) => {
+const fetchAgriData = async (ticker, baseSymbol, totalContracts = AGRI_TOTAL_CONTRACTS) => {
     try {
         const quote = await fetchYahooQuote(ticker);
         if (!quote || !isValidNumber(quote.regularMarketPrice)) {
@@ -227,7 +313,7 @@ const fetchAgriData = async (ticker, baseSymbol) => {
             dif: formatValue(dif)
         };
 
-        const futureTickers = getFutureTickers(baseSymbol, 18);
+        const futureTickers = getFutureTickers(baseSymbol, Math.max(0, totalContracts - 1));
         const results = [atual];
 
         for (const ft of futureTickers) {
@@ -248,13 +334,23 @@ const fetchAgriData = async (ticker, baseSymbol) => {
                     dif: formatValue(difFuturo)
                 });
             } catch (e) {
-                console.error(`Error fetching future ${ft.ticker}:`, e.message);
+                logEvent('error', 'agri_future_fetch_failed', {
+                    cycleId: activeCycleStats?.cycleId || null,
+                    baseSymbol,
+                    ticker: ft.ticker,
+                    message: toSafeErrorMessage(e)
+                });
             }
         }
 
-        return results;
+        return results.slice(0, Math.max(1, totalContracts));
     } catch (e) {
-        console.error(`Error fetching ${ticker}:`, e.message);
+        logEvent('error', 'agri_spot_fetch_failed', {
+            cycleId: activeCycleStats?.cycleId || null,
+            baseSymbol,
+            ticker,
+            message: toSafeErrorMessage(e)
+        });
         return [];
     }
 };
@@ -276,7 +372,12 @@ const fetchFinanceData = async (ticker, name) => {
             fec: formatValue(quote.regularMarketPreviousClose)
         };
     } catch (e) {
-        console.error(`Error fetching ${ticker}:`, e.message);
+        logEvent('error', 'finance_fetch_failed', {
+            cycleId: activeCycleStats?.cycleId || null,
+            ticker,
+            name,
+            message: toSafeErrorMessage(e)
+        });
         return null;
     }
 };
@@ -372,7 +473,11 @@ async function fetchPtaxQuotesForDate(date) {
             low: Math.min(...prices)
         };
     } catch (error) {
-        console.error(`Error fetching Dólar PTAX série (${dateQuery}):`, error.message);
+        logEvent('warn', 'ptax_fetch_failed', {
+            cycleId: activeCycleStats?.cycleId || null,
+            dateQuery,
+            message: toSafeErrorMessage(error)
+        });
         return null;
     }
 }
@@ -425,9 +530,8 @@ async function fetchUsdBrlPtaxData(spotFallback = null) {
 }
 
 async function fetchDolarFuturoB3(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
-    const lookupWindow = Math.max(monthsAhead * 6, monthsAhead);
+    const lookupWindow = Math.max(monthsAhead * 2, monthsAhead);
     const contracts = getNextFinancialContracts(lookupWindow);
-    const prefixes = ['DOL', 'WDO'];
     const results = [];
 
     for (const contract of contracts) {
@@ -435,32 +539,56 @@ async function fetchDolarFuturoB3(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
             break;
         }
 
-        for (const prefix of prefixes) {
-            const ticker = `${prefix}${contract.code}${contract.year}.SA`;
+        const ticker = `DOL${contract.code}${contract.year}.SA`;
 
-            try {
-                const quote = await fetchYahooQuote(ticker);
-                if (!quote) {
-                    continue;
-                }
-
-                const hasPrice = isValidNumber(quote.regularMarketPrice);
-
-                if (!hasPrice) {
-                    continue;
-                }
-
-                results.push(normalizeDolarFuturoFinanceiroRow(contract.label, {
-                    price: quote.regularMarketPrice,
-                    varPerc: quote.regularMarketChangePercent || 0,
-                    high: quote.regularMarketDayHigh,
-                    low: quote.regularMarketDayLow,
-                    previousClose: quote.regularMarketPreviousClose
-                }));
-                break;
-            } catch (e) {
-                console.error(`Error fetching ${ticker}:`, e.message);
+        try {
+            const quote = await fetchYahooQuote(ticker);
+            if (!quote) {
+                continue;
             }
+
+            const price = firstValidNumber(
+                quote.regularMarketPrice,
+                quote.postMarketPrice,
+                quote.preMarketPrice,
+                quote.regularMarketPreviousClose
+            );
+
+            if (!isValidNumber(price)) {
+                logEvent('warn', 'dolar_futuro_no_usable_price', {
+                    cycleId: activeCycleStats?.cycleId || null,
+                    ticker,
+                    regularMarketPrice: toNumberOrNull(quote.regularMarketPrice),
+                    regularMarketPreviousClose: toNumberOrNull(quote.regularMarketPreviousClose)
+                });
+                continue;
+            }
+
+            const previousClose = firstValidNumber(
+                quote.regularMarketPreviousClose,
+                quote.regularMarketPrice,
+                quote.postMarketPrice,
+                quote.preMarketPrice
+            );
+            const high = firstValidNumber(quote.regularMarketDayHigh, price);
+            const low = firstValidNumber(quote.regularMarketDayLow, price);
+            const varPerc = isValidNumber(quote.regularMarketChangePercent)
+                ? quote.regularMarketChangePercent
+                : (isValidNumber(previousClose) && previousClose !== 0 ? toPercent(price, previousClose) : 0);
+
+            results.push(normalizeDolarFuturoFinanceiroRow(contract.label, {
+                price,
+                varPerc,
+                high,
+                low,
+                previousClose
+            }));
+        } catch (e) {
+            logEvent('error', 'dolar_futuro_fetch_failed', {
+                cycleId: activeCycleStats?.cycleId || null,
+                ticker,
+                message: toSafeErrorMessage(e)
+            });
         }
     }
 
@@ -468,7 +596,7 @@ async function fetchDolarFuturoB3(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
 }
 
 async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
-    const lookupWindow = Math.max(monthsAhead * 6, monthsAhead);
+    const lookupWindow = Math.max(monthsAhead * 3, monthsAhead);
     const contracts = getNextFinancialContracts(lookupWindow);
     const results = [];
 
@@ -485,29 +613,42 @@ async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
                 continue;
             }
 
-            const brlUsd = quote.regularMarketPrice;
-            const brlUsdPrev = quote.regularMarketPreviousClose;
-            const brlUsdHigh = quote.regularMarketDayHigh;
-            const brlUsdLow = quote.regularMarketDayLow;
+            const brlUsd = firstValidNumber(
+                quote.regularMarketPrice,
+                quote.postMarketPrice,
+                quote.preMarketPrice,
+                quote.regularMarketPreviousClose
+            );
 
-            if (!isValidNumber(brlUsd)) {
+            if (!isValidNumber(brlUsd) || brlUsd === 0) {
                 continue;
             }
 
+            const brlUsdPrev = firstValidNumber(quote.regularMarketPreviousClose, brlUsd);
+            const brlUsdHigh = firstValidNumber(quote.regularMarketDayHigh, brlUsd);
+            const brlUsdLow = firstValidNumber(quote.regularMarketDayLow, brlUsd);
+
             const usdBrl = 1 / brlUsd;
-            const usdBrlPrev = brlUsdPrev ? 1 / brlUsdPrev : null;
-            const usdBrlHigh = brlUsdLow ? 1 / brlUsdLow : null;
-            const usdBrlLow = brlUsdHigh ? 1 / brlUsdHigh : null;
+            const usdBrlPrev = isValidNumber(brlUsdPrev) && brlUsdPrev !== 0 ? 1 / brlUsdPrev : null;
+            const usdBrlHigh = isValidNumber(brlUsdLow) && brlUsdLow !== 0 ? 1 / brlUsdLow : usdBrl;
+            const usdBrlLow = isValidNumber(brlUsdHigh) && brlUsdHigh !== 0 ? 1 / brlUsdHigh : usdBrl;
+            const varPerc = isValidNumber(quote.regularMarketChangePercent)
+                ? quote.regularMarketChangePercent
+                : (isValidNumber(usdBrlPrev) ? toPercent(usdBrl, usdBrlPrev) : 0);
 
             results.push(normalizeDolarFuturoFinanceiroRow(contract.label, {
                 price: usdBrl,
-                varPerc: usdBrlPrev ? toPercent(usdBrl, usdBrlPrev) : 0,
+                varPerc,
                 high: usdBrlHigh,
                 low: usdBrlLow,
                 previousClose: usdBrlPrev
             }));
         } catch (e) {
-            console.error(`Error fetching ${ticker}:`, e.message);
+            logEvent('error', 'dolar_futuro_cme_fetch_failed', {
+                cycleId: activeCycleStats?.cycleId || null,
+                ticker,
+                message: toSafeErrorMessage(e)
+            });
         }
     }
 
@@ -530,7 +671,11 @@ async function fetchUsdBrlSpotFallback() {
             previousClose: quote.regularMarketPreviousClose
         };
     } catch (e) {
-        console.error('Error fetching BRL=X fallback:', e.message);
+        logEvent('error', 'usd_brl_fallback_failed', {
+            cycleId: activeCycleStats?.cycleId || null,
+            ticker: 'BRL=X',
+            message: toSafeErrorMessage(e)
+        });
         return null;
     }
 }
@@ -566,45 +711,72 @@ async function fetchUsdEurData() {
             fec: formatValue(usdEurPrev, 4, 4)
         };
     } catch (e) {
-        console.error('Error fetching EURUSD=X:', e.message);
+        logEvent('error', 'usd_eur_fetch_failed', {
+            cycleId: activeCycleStats?.cycleId || null,
+            ticker: 'EURUSD=X',
+            message: toSafeErrorMessage(e)
+        });
         return null;
     }
 }
 
 async function fetchDolarFuturoFinanceiroRows(count = DOLAR_FUTURO_CONTRACT_COUNT) {
-    let futures = await fetchDolarFuturoB3(count);
+    return fetchDolarFuturoCme(count);
+}
 
-    if (futures.length < count) {
-        const cmeFutures = await fetchDolarFuturoCme(count);
-        const byIndice = new Map();
+function buildPlannedYahooSymbols() {
+    const financialSymbols = ['EURBRL=X', 'EURUSD=X', 'DX-Y.NYB', 'GC=F', 'BRL=X'];
+    const agriSpots = ['ZS=F', 'ZM=F', 'ZL=F'];
+    const agriFutures = ['ZS', 'ZM', 'ZL']
+        .flatMap(baseSymbol => getFutureTickers(baseSymbol, Math.max(0, AGRI_TOTAL_CONTRACTS - 1)).map(item => item.ticker));
 
-        for (const row of [...futures, ...cmeFutures]) {
-            if (!byIndice.has(row.indice)) {
-                byIndice.set(row.indice, row);
-            }
-        }
+    const dolarContracts = getNextFinancialContracts(Math.max(DOLAR_FUTURO_CONTRACT_COUNT * 3, DOLAR_FUTURO_CONTRACT_COUNT));
+    const dolarCandidates = dolarContracts.map(contract => `6L${contract.code}${contract.year}.CME`);
 
-        futures = Array.from(byIndice.values());
-    }
-
-    return futures.slice(0, count);
+    return Array.from(new Set([...agriSpots, ...agriFutures, ...financialSymbols, ...dolarCandidates]));
 }
 
 const updateCache = async () => {
     if (updateCache.isRunning) {
-        console.log(`[${new Date().toISOString()}] Previous cache update still running. Skipping this cycle.`);
+        const runningForMs = updateCache.startedAt ? Date.now() - updateCache.startedAt : null;
+        logEvent('warn', 'cache_update_skipped_previous_running', {
+            cycleId: updateCache.currentCycleId || null,
+            runningForMs
+        });
         return;
     }
 
+    const cycleId = createCycleId();
+    const startedAt = Date.now();
+    const plannedYahooSymbols = buildPlannedYahooSymbols();
+
     updateCache.isRunning = true;
-    console.log(`[${new Date().toISOString()}] Fetching new data from Yahoo Finance...`);
+    updateCache.currentCycleId = cycleId;
+    updateCache.startedAt = startedAt;
+    activeCycleStats = {
+        cycleId,
+        yahooRequests: 0,
+        yahooSuccess: 0,
+        yahooFailures: 0,
+        yahooRetries: 0,
+        yahoo429: 0
+    };
+
+    logEvent('info', 'cache_update_started', {
+        cycleId,
+        syncIntervalMinutes: SYNC_INTERVAL_MINUTES,
+        agriTotalContracts: AGRI_TOTAL_CONTRACTS,
+        dolarFuturoContractCount: DOLAR_FUTURO_CONTRACT_COUNT,
+        plannedYahooSymbolsCount: plannedYahooSymbols.length,
+        plannedYahooSymbols
+    });
 
     try {
         const usdSpot = await fetchUsdBrlSpotData();
         const usdPtax = await fetchUsdBrlPtaxData(usdSpot);
-        const sojaGrao = await fetchAgriData('ZS=F', 'ZS');
-        const fareloSoja = await fetchAgriData('ZM=F', 'ZM');
-        const oleoSoja = await fetchAgriData('ZL=F', 'ZL');
+        const sojaGrao = await fetchAgriData('ZS=F', 'ZS', AGRI_TOTAL_CONTRACTS);
+        const fareloSoja = await fetchAgriData('ZM=F', 'ZM', AGRI_TOTAL_CONTRACTS);
+        const oleoSoja = await fetchAgriData('ZL=F', 'ZL', AGRI_TOTAL_CONTRACTS);
         const dolarFuturo = await fetchDolarFuturoFinanceiroRows(DOLAR_FUTURO_CONTRACT_COUNT);
 
         const financeiroResults = [];
@@ -632,15 +804,39 @@ const updateCache = async () => {
         cache.financeiro = financeiro.length ? financeiro : cache.financeiro;
         cache.lastUpdated = new Date();
 
-        console.log(`[${new Date().toISOString()}] Cache updated successfully.`);
+        logEvent('info', 'cache_update_finished', {
+            cycleId,
+            durationMs: Date.now() - startedAt,
+            yahooRequests: activeCycleStats?.yahooRequests || 0,
+            yahooSuccess: activeCycleStats?.yahooSuccess || 0,
+            yahooFailures: activeCycleStats?.yahooFailures || 0,
+            yahooRetries: activeCycleStats?.yahooRetries || 0,
+            yahoo429: activeCycleStats?.yahoo429 || 0,
+            financeiroRows: cache.financeiro.length,
+            sojaContracts: cache.agricola.sojaGrao.length,
+            fareloContracts: cache.agricola.fareloSoja.length,
+            oleoContracts: cache.agricola.oleoSoja.length
+        });
     } catch (e) {
-        console.error('Error updating cache:', e.message);
+        logEvent('error', 'cache_update_failed', {
+            cycleId,
+            durationMs: Date.now() - startedAt,
+            message: toSafeErrorMessage(e),
+            yahooRequests: activeCycleStats?.yahooRequests || 0,
+            yahooRetries: activeCycleStats?.yahooRetries || 0,
+            yahoo429: activeCycleStats?.yahoo429 || 0
+        });
     } finally {
+        activeCycleStats = null;
         updateCache.isRunning = false;
+        updateCache.currentCycleId = null;
+        updateCache.startedAt = null;
     }
 };
 
 updateCache.isRunning = false;
+updateCache.currentCycleId = null;
+updateCache.startedAt = null;
 
 updateCache();
 setInterval(updateCache, SYNC_INTERVAL_MINUTES * 60 * 1000);
@@ -661,5 +857,13 @@ app.get('/api/status', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    logEvent('info', 'server_started', {
+        port: PORT,
+        syncIntervalMinutes: SYNC_INTERVAL_MINUTES,
+        agriTotalContracts: AGRI_TOTAL_CONTRACTS,
+        dolarFuturoContractCount: DOLAR_FUTURO_CONTRACT_COUNT,
+        yahooMinRequestIntervalMs: YAHOO_MIN_REQUEST_INTERVAL_MS,
+        yahooMaxRetries: YAHOO_MAX_RETRIES,
+        yahooRetryBaseDelayMs: YAHOO_RETRY_BASE_DELAY_MS
+    });
 });

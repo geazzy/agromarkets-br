@@ -13,8 +13,10 @@ services:
       - key: PORT
         value: 10000
       - key: SYNC_INTERVAL_MINUTES
-        value: 5
+        value: 15
       - key: DOLAR_FUTURO_CONTRACT_COUNT
+        value: 3
+      - key: AGRI_TOTAL_CONTRACTS
         value: 3
       - key: PROVIDER_TIMEOUT_MS
         value: 8000
