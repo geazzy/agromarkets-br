@@ -14,9 +14,7 @@ services:
         value: 10000
       - key: SYNC_INTERVAL_MINUTES
         value: 15
+      - key: DOLAR_FUTURO_CONTRACT_COUNT
+        value: 3
       - key: PROVIDER_TIMEOUT_MS
         value: 8000
-      - key: BRAPI_BASE_URL
-        value: https://brapi.dev
-      - key: BRAPI_API_KEY
-        sync: false

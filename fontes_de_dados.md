@@ -15,11 +15,10 @@ Esta é a fonte usada para ativos globais, incluindo os contratos futuros agríc
     *   **Ouro:** `GC=F`
     *   **Índice Dólar (DXY):** `DX-Y.NYB`
 
-### 2. Brapi (spot USD/BRL primário)
-API brasileira usada como fonte primária para o spot de dólar comercial (USD/BRL) no backend.
-*   **Link:** [brapi.dev](https://brapi.dev/)
-*   **Útil para:** Cotação de moedas/câmbio com autenticação por chave, sem expor segredo no frontend.
-*   **No projeto atual:** prioridade para `USD/BRL` spot.
+### 2. PTAX (Banco Central do Brasil - OData)
+Fonte oficial para dólar PTAX usada no backend para o indicador de referência.
+*   **Link:** [Olinda BCB](https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/aplicacao#!/)
+*   **Útil para:** Cotação oficial de dólar (PTAX), sem dependência de plano pago de terceiros.
 
 ### 3. Alpha Vantage / Finnhub
 APIs globais muito consolidadas no mercado financeiro para Desenvolvedores.
@@ -39,5 +38,5 @@ Se você tentar fazer requisições dessas APIs financeiras **diretamente pelo s
 
 **O caminho ideal é:**
 1. Criar um servidor backend bem simples (ex: `Node.js + Express`).
-2. O servidor backend faz a requisição para a Brapi (spot USD/BRL) e Yahoo Finance (curva/fallback) a cada X minutos e salva num cache.
+2. O servidor backend faz a requisição para o Yahoo Finance (spot/curva) e PTAX (BCB) a cada X minutos e salva num cache.
 3. O seu frontend em React (o código que fizemos) faz um `fetch` ou um Polling para o **seu backend**, recebendo os dados limpos e já formatados na estrutura `SojaData` e `FinanceiroData`.

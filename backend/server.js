@@ -10,9 +10,8 @@ const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 const app = express();
 const PORT = process.env.PORT || 3001;
 const SYNC_INTERVAL_MINUTES = Number(process.env.SYNC_INTERVAL_MINUTES || 15);
-const BRAPI_BASE_URL = process.env.BRAPI_BASE_URL || 'https://brapi.dev';
-const BRAPI_API_KEY = (process.env.BRAPI_API_KEY || '').trim().replace(/^['"]|['"]$/g, '');
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 8000);
+const DOLAR_FUTURO_CONTRACT_COUNT = Number(process.env.DOLAR_FUTURO_CONTRACT_COUNT || 3);
 
 app.use(cors());
 
@@ -241,7 +240,7 @@ function getNextFinancialContracts(monthsAhead) {
     const contracts = [];
     const now = new Date();
 
-    for (let offset = 0; offset <= monthsAhead; offset += 1) {
+    for (let offset = 0; contracts.length < monthsAhead; offset += 1) {
         const date = new Date(now.getFullYear(), now.getMonth() + offset, 1);
         const year = date.getFullYear().toString().slice(-2);
         const month = date.getMonth() + 1;
@@ -260,28 +259,6 @@ function getNextFinancialContracts(monthsAhead) {
     return contracts;
 }
 
-function normalizeDolarFuturoRow(contrato, values) {
-    return {
-        contrato,
-        indice: contrato,
-        ult: formatValue(values.price, 4, 4),
-        varPerc: formatValue(values.varPerc),
-        max: formatValue(values.high, 4, 4),
-        min: formatValue(values.low, 4, 4),
-        fec: formatValue(values.previousClose, 4, 4)
-    };
-}
-
-function normalizeUsdBrlSpotRow(values, label = 'USD/BRL Spot') {
-    return normalizeDolarFuturoRow(label, {
-        price: values.price,
-        varPerc: values.varPerc,
-        high: values.high,
-        low: values.low,
-        previousClose: values.previousClose
-    });
-}
-
 function normalizeUsdBrlFinanceiroRow(values) {
     return {
         indice: 'USD Comercial',
@@ -293,99 +270,118 @@ function normalizeUsdBrlFinanceiroRow(values) {
     };
 }
 
-function parseBrapiUsdBrlPayload(payload) {
-    const root = payload || {};
-    const result = Array.isArray(root.results) ? root.results[0] : null;
-    const currencyItem = Array.isArray(root.currency) ? root.currency[0] : null;
-    const currencies = root.results?.currencies || root.currencies;
-    const usd = currencies?.USD;
-
-    const price = firstValidNumber(
-        result?.regularMarketPrice,
-        result?.bid,
-        result?.price,
-        result?.close,
-        currencyItem?.bidPrice,
-        currencyItem?.askPrice,
-        usd?.buy,
-        usd?.sell
-    );
-
-    const previousClose = firstValidNumber(
-        result?.regularMarketPreviousClose,
-        result?.previousClose,
-        currencyItem?.previousClose,
-        usd?.sell
-    );
-
-    const high = firstValidNumber(
-        result?.regularMarketDayHigh,
-        result?.high,
-        currencyItem?.high,
-        price
-    );
-
-    const low = firstValidNumber(
-        result?.regularMarketDayLow,
-        result?.low,
-        currencyItem?.low,
-        price
-    );
-
-    const varPerc = firstValidNumber(
-        result?.regularMarketChangePercent,
-        result?.changePercent,
-        currencyItem?.percentageChange,
-        usd?.variation,
-        price && previousClose ? toPercent(price, previousClose) : 0
-    );
-
-    if (!isValidNumber(price)) {
-        return null;
-    }
-
+function normalizeUsdBrlPtaxFinanceiroRow(values) {
     return {
-        price,
-        previousClose: isValidNumber(previousClose) ? previousClose : null,
-        high: isValidNumber(high) ? high : null,
-        low: isValidNumber(low) ? low : null,
-        varPerc: isValidNumber(varPerc) ? varPerc : 0
+        indice: 'Dólar PTAX',
+        ult: formatValue(values.price),
+        varPerc: formatValue(values.varPerc),
+        max: formatValue(values.high),
+        min: formatValue(values.low),
+        fec: formatValue(values.previousClose)
     };
 }
 
-async function fetchUsdBrlSpotFromBrapi() {
-    if (!BRAPI_API_KEY) {
+function normalizeDolarFuturoFinanceiroRow(label, values) {
+    return {
+        indice: `Dólar Futuro ${label}`,
+        ult: formatValue(values.price, 4, 4),
+        varPerc: formatValue(values.varPerc),
+        max: formatValue(values.high, 4, 4),
+        min: formatValue(values.low, 4, 4),
+        fec: formatValue(values.previousClose, 4, 4)
+    };
+}
+
+function getBcbPtaxDateQuery(date) {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${month}-${day}-${year}`;
+}
+
+async function fetchPtaxQuotesForDate(date) {
+    const dateQuery = getBcbPtaxDateQuery(date);
+    const endpoint = `https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@dataInicial='${dateQuery}'&@dataFinalCotacao='${dateQuery}'&$format=json`;
+
+    try {
+        const payload = await fetchJsonWithTimeout(endpoint, {
+            headers: { Accept: 'application/json' }
+        });
+
+        const rows = Array.isArray(payload?.value) ? payload.value : [];
+        if (!rows.length) {
+            return null;
+        }
+
+        const prices = rows
+            .map(item => firstValidNumber(item?.cotacaoVenda, item?.cotacaoCompra))
+            .filter(isValidNumber);
+
+        if (!prices.length) {
+            return null;
+        }
+
+        return {
+            price: prices[prices.length - 1],
+            high: Math.max(...prices),
+            low: Math.min(...prices)
+        };
+    } catch (error) {
+        console.error(`Error fetching Dólar PTAX série (${dateQuery}):`, error.message);
         return null;
     }
+}
 
-    const headers = {
-        Authorization: `Bearer ${BRAPI_API_KEY}`,
-        Accept: 'application/json'
-    };
+async function fetchUsdBrlPtaxData(spotFallback = null) {
+    const now = new Date();
+    const currentDayData = await fetchPtaxQuotesForDate(now);
 
-    const endpoints = [
-        `${BRAPI_BASE_URL}/api/v2/currency?currency=USD-BRL`,
-        `${BRAPI_BASE_URL}/api/v1/currency?currency=USD-BRL`
-    ];
+    if (currentDayData) {
+        let previousClose = null;
 
-    for (const endpoint of endpoints) {
-        try {
-            const payload = await fetchJsonWithTimeout(endpoint, { headers });
-            const parsed = parseBrapiUsdBrlPayload(payload);
+        for (let dayOffset = 1; dayOffset <= 7; dayOffset += 1) {
+            const previousDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOffset);
+            const previousDayData = await fetchPtaxQuotesForDate(previousDate);
 
-            if (parsed) {
-                return parsed;
+            if (previousDayData && isValidNumber(previousDayData.price)) {
+                previousClose = previousDayData.price;
+                break;
             }
-        } catch (error) {
-            console.error(`Error fetching USD/BRL from Brapi (${endpoint}):`, error.message);
         }
+
+        if (!isValidNumber(previousClose) && spotFallback && isValidNumber(spotFallback.previousClose)) {
+            previousClose = spotFallback.previousClose;
+        }
+
+        const varPerc = isValidNumber(previousClose)
+            ? toPercent(currentDayData.price, previousClose)
+            : 0;
+
+        return {
+            price: currentDayData.price,
+            varPerc,
+            high: currentDayData.high,
+            low: currentDayData.low,
+            previousClose
+        };
+    }
+
+    if (spotFallback && isValidNumber(spotFallback.price)) {
+        return {
+            price: spotFallback.price,
+            varPerc: spotFallback.varPerc || 0,
+            high: spotFallback.high,
+            low: spotFallback.low,
+            previousClose: spotFallback.previousClose
+        };
     }
 
     return null;
 }
 
-async function fetchDolarFuturoB3(monthsAhead = 12) {
-    const contracts = getNextFinancialContracts(monthsAhead);
+async function fetchDolarFuturoB3(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
+    const lookupWindow = Math.max(monthsAhead * 6, monthsAhead);
+    const contracts = getNextFinancialContracts(lookupWindow);
     const prefixes = ['DOL', 'WDO'];
 
     const contractQuotes = await Promise.all(contracts.map(async (contract) => {
@@ -404,7 +400,7 @@ async function fetchDolarFuturoB3(monthsAhead = 12) {
                     continue;
                 }
 
-                return normalizeDolarFuturoRow(`${prefix} ${contract.label}`, {
+                return normalizeDolarFuturoFinanceiroRow(contract.label, {
                     price: quote.regularMarketPrice,
                     varPerc: quote.regularMarketChangePercent || 0,
                     high: quote.regularMarketDayHigh,
@@ -422,8 +418,9 @@ async function fetchDolarFuturoB3(monthsAhead = 12) {
     return contractQuotes.filter(Boolean);
 }
 
-async function fetchDolarFuturoCme(monthsAhead = 12) {
-    const contracts = getNextFinancialContracts(monthsAhead);
+async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
+    const lookupWindow = Math.max(monthsAhead * 6, monthsAhead);
+    const contracts = getNextFinancialContracts(lookupWindow);
 
     const contractQuotes = await Promise.all(contracts.map(async (contract) => {
         const ticker = `6L${contract.code}${contract.year}.CME`;
@@ -448,7 +445,7 @@ async function fetchDolarFuturoCme(monthsAhead = 12) {
             const usdBrlHigh = brlUsdLow ? 1 / brlUsdLow : null;
             const usdBrlLow = brlUsdHigh ? 1 / brlUsdHigh : null;
 
-            return normalizeDolarFuturoRow(`USD/BRL ${contract.label}`, {
+            return normalizeDolarFuturoFinanceiroRow(contract.label, {
                 price: usdBrl,
                 varPerc: usdBrlPrev ? toPercent(usdBrl, usdBrlPrev) : 0,
                 high: usdBrlHigh,
@@ -486,34 +483,58 @@ async function fetchUsdBrlSpotFallback() {
 }
 
 async function fetchUsdBrlSpotData() {
-    const brapiSpot = await fetchUsdBrlSpotFromBrapi();
-    if (brapiSpot) {
-        return brapiSpot;
-    }
-
     return fetchUsdBrlSpotFallback();
 }
 
-async function fetchDolarFuturoData(spotOverride = null) {
-    const spot = spotOverride || await fetchUsdBrlSpotData();
-    const b3Contracts = await fetchDolarFuturoB3(12);
-    let futures = b3Contracts;
+async function fetchUsdEurData() {
+    try {
+        const quote = await yahooFinance.quote('EURUSD=X');
 
-    if (futures.length < 2) {
-        const cmeContracts = await fetchDolarFuturoCme(12);
-        if (cmeContracts.length) {
-            futures = cmeContracts;
+        if (!quote || !isValidNumber(quote.regularMarketPrice)) {
+            return null;
         }
+
+        const eurUsd = quote.regularMarketPrice;
+        const eurUsdPrev = quote.regularMarketPreviousClose;
+        const eurUsdHigh = quote.regularMarketDayHigh;
+        const eurUsdLow = quote.regularMarketDayLow;
+
+        const usdEur = 1 / eurUsd;
+        const usdEurPrev = isValidNumber(eurUsdPrev) ? 1 / eurUsdPrev : null;
+        const usdEurHigh = isValidNumber(eurUsdLow) ? 1 / eurUsdLow : null;
+        const usdEurLow = isValidNumber(eurUsdHigh) ? 1 / eurUsdHigh : null;
+
+        return {
+            indice: 'Dólar / Euro',
+            ult: formatValue(usdEur, 4, 4),
+            varPerc: formatValue(usdEurPrev ? toPercent(usdEur, usdEurPrev) : 0),
+            max: formatValue(usdEurHigh, 4, 4),
+            min: formatValue(usdEurLow, 4, 4),
+            fec: formatValue(usdEurPrev, 4, 4)
+        };
+    } catch (e) {
+        console.error('Error fetching EURUSD=X:', e.message);
+        return null;
+    }
+}
+
+async function fetchDolarFuturoFinanceiroRows(count = DOLAR_FUTURO_CONTRACT_COUNT) {
+    let futures = await fetchDolarFuturoB3(count);
+
+    if (futures.length < count) {
+        const cmeFutures = await fetchDolarFuturoCme(count);
+        const byIndice = new Map();
+
+        for (const row of [...futures, ...cmeFutures]) {
+            if (!byIndice.has(row.indice)) {
+                byIndice.set(row.indice, row);
+            }
+        }
+
+        futures = Array.from(byIndice.values());
     }
 
-    const rows = [];
-
-    if (spot) {
-        rows.push(normalizeUsdBrlSpotRow(spot));
-    }
-
-    rows.push(...futures);
-    return rows;
+    return futures.slice(0, count);
 }
 
 const updateCache = async () => {
@@ -521,27 +542,31 @@ const updateCache = async () => {
 
     try {
         const usdSpot = await fetchUsdBrlSpotData();
+        const usdPtax = await fetchUsdBrlPtaxData(usdSpot);
         const sojaGrao = await fetchAgriData('ZS=F', 'ZS');
         const fareloSoja = await fetchAgriData('ZM=F', 'ZM');
         const oleoSoja = await fetchAgriData('ZL=F', 'ZL');
-        const dolarFuturo = await fetchDolarFuturoData(usdSpot);
+        const dolarFuturo = await fetchDolarFuturoFinanceiroRows(DOLAR_FUTURO_CONTRACT_COUNT);
 
         const financeiroPromises = [
             fetchFinanceData('EURBRL=X', 'Real / Euro'),
+            fetchUsdEurData(),
             fetchFinanceData('DX-Y.NYB', 'DXY'),
             fetchFinanceData('GC=F', 'GOLD')
         ];
 
         const financeiroResults = await Promise.all(financeiroPromises);
+
         const usdFinanceRow = usdSpot
             ? normalizeUsdBrlFinanceiroRow(usdSpot)
             : await fetchFinanceData('BRL=X', 'USD Comercial');
 
-        if (usdFinanceRow) {
-            financeiroResults.unshift(usdFinanceRow);
-        }
-
-        const financeiro = financeiroResults.filter(r => r !== null);
+        const financeiro = [
+            usdPtax ? normalizeUsdBrlPtaxFinanceiroRow(usdPtax) : null,
+            usdFinanceRow,
+            ...dolarFuturo,
+            ...financeiroResults
+        ].filter(r => r !== null);
 
         cache.agricola = {
             sojaGrao: sojaGrao.length ? sojaGrao : cache.agricola.sojaGrao,
@@ -549,7 +574,7 @@ const updateCache = async () => {
             oleoSoja: oleoSoja.length ? oleoSoja : cache.agricola.oleoSoja
         };
         cache.financeiro = financeiro.length ? financeiro : cache.financeiro;
-        cache.dolarFuturo = dolarFuturo.length ? dolarFuturo : cache.dolarFuturo;
+        cache.dolarFuturo = [];
         cache.lastUpdated = new Date();
 
         console.log(`[${new Date().toISOString()}] Cache updated successfully.`);

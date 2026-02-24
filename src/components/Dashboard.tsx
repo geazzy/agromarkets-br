@@ -23,16 +23,6 @@ interface FinanceiroData {
     fec: string;
 }
 
-interface DolarFuturoData {
-    contrato: string;
-    indice: string;
-    ult: string;
-    varPerc: string;
-    max: string;
-    min: string;
-    fec: string;
-}
-
 interface BackendStatus {
     lastUpdated: string | null;
     syncIntervalMinutes: number;
@@ -58,15 +48,6 @@ const financeiroColumns: ColumnDef<FinanceiroData>[] = [
     { key: 'fec', header: 'FEC' },
 ];
 
-const dolarFuturoColumns: ColumnDef<DolarFuturoData>[] = [
-    { key: 'contrato', header: 'CONTRATO' },
-    { key: 'ult', header: 'ULT' },
-    { key: 'varPerc', header: 'VAR. [%]' },
-    { key: 'max', header: 'MAX' },
-    { key: 'min', header: 'MIN' },
-    { key: 'fec', header: 'FEC' },
-];
-
 const SYNC_INTERVAL_MINUTES = 15;
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001').replace(/\/$/, '');
 
@@ -82,7 +63,6 @@ export function Dashboard() {
     });
 
     const [financeiroData, setFinanceiroData] = useState<FinanceiroData[]>([]);
-    const [dolarFuturoData, setDolarFuturoData] = useState<DolarFuturoData[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
@@ -90,25 +70,22 @@ export function Dashboard() {
 
     const fetchData = async () => {
         try {
-            const [agriRes, finRes, dolarFuturoRes, statusRes] = await Promise.all([
+            const [agriRes, finRes, statusRes] = await Promise.all([
                 fetch(`${API_BASE_URL}/api/agricola`),
                 fetch(`${API_BASE_URL}/api/financeiro`),
-                fetch(`${API_BASE_URL}/api/dolar-futuro`),
                 fetch(`${API_BASE_URL}/api/status`)
             ]);
 
-            if (!agriRes.ok || !finRes.ok || !dolarFuturoRes.ok || !statusRes.ok) {
+            if (!agriRes.ok || !finRes.ok || !statusRes.ok) {
                 throw new Error('Failed to fetch data');
             }
 
             const agriData = await agriRes.json();
             const finData = await finRes.json();
-            const dolarFuturoApiData = await dolarFuturoRes.json();
             const statusData: BackendStatus = await statusRes.json();
 
             setAgricolaData(agriData);
             setFinanceiroData(finData);
-            setDolarFuturoData(dolarFuturoApiData);
             setLastSyncAt(statusData.lastUpdated ? new Date(statusData.lastUpdated) : null);
             setSyncIntervalMinutes(statusData.syncIntervalMinutes);
             setError(null);
@@ -221,31 +198,13 @@ export function Dashboard() {
                     </div>
                 </section>
 
-                {/* DÓLAR FUTURO */}
-                <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                    <DataTable
-                        title="DÓLAR FUTURO"
-                        data={dolarFuturoData}
-                        columns={dolarFuturoColumns}
-                        highlightColumn="varPerc"
-                        freezeFirstColumn
-                    />
-                    <div className="w-full h-full min-h-[400px] bg-[#0a192f] rounded-lg shadow-xl overflow-hidden border border-[#1e2d4a] flex flex-col">
-                        <div className="bg-[#112240] px-4 py-2 border-b border-[#1e2d4a]">
-                            <h3 className="text-white font-bold text-center text-sm md:text-base tracking-wider uppercase">CURVA FUTURA - DÓLAR</h3>
-                        </div>
-                        <div className="flex-grow p-4">
-                            <ForwardCurveChart data={dolarFuturoData} />
-                        </div>
-                    </div>
-                </section>
-
                 <section className="mt-4">
                     <DataTable
                         title="INDICADORES FINANCEIROS"
                         data={financeiroData}
                         columns={financeiroColumns}
                         highlightColumn="varPerc"
+                        freezeFirstColumn
                     />
                 </section>
             </main>

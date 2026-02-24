@@ -35,7 +35,6 @@ Opção A (recomendada): usar Blueprint com `render.yaml` já incluído na raiz.
 1. No Render, clique em **New +** → **Blueprint**.
 2. Conecte seu GitHub e selecione este repositório.
 3. Confirme a criação do serviço `agromarkets-br-backend`.
-4. Em **Environment**, defina `BRAPI_API_KEY`.
 
 O restante já está pré-configurado:
 
@@ -76,27 +75,25 @@ Backend (`backend/.env.example`):
 - `PORT`
 - `SYNC_INTERVAL_MINUTES`
 - `PROVIDER_TIMEOUT_MS`
-- `BRAPI_BASE_URL`
-- `BRAPI_API_KEY`
+- `DOLAR_FUTURO_CONTRACT_COUNT`
 
 ## Configuração do backend (câmbio e curva)
 
 O backend usa:
 
-- **Brapi** como fonte primária do spot `USD/BRL`
-- **Yahoo Finance** para curva de dólar futuro e fallback de spot
+- **Yahoo Finance** para spot `USD/BRL`, dólar futuro e demais indicadores
+- **PTAX (BCB/OData)** para indicador oficial de dólar PTAX
 
 Variáveis de ambiente suportadas no backend:
 
 - `PORT` (default: `3001`)
 - `SYNC_INTERVAL_MINUTES` (default: `15`)
 - `PROVIDER_TIMEOUT_MS` (default: `8000`)
-- `BRAPI_BASE_URL` (default: `https://brapi.dev`)
-- `BRAPI_API_KEY` (opcional, mas recomendada em produção)
+- `DOLAR_FUTURO_CONTRACT_COUNT` (default: `3`)
 
 Exemplo:
 
 ```bash
 cd backend
-BRAPI_API_KEY=sua_chave_aqui npm run dev
+npm run dev
 ```
