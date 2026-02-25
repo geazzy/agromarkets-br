@@ -48,8 +48,13 @@ export function DataTable<T>({ title, data, columns, highlightColumn, freezeFirs
                                 )}
                             >
                                 {columns.map((col, colIndex) => {
+                                    const rowRecord = row as Record<string, unknown>;
                                     const val = String(row[col.key as keyof T] ?? '');
-                                    const numVal = parseFloat(val.replace(',', '.'));
+                                    const rawKey = `${String(col.key)}Raw`;
+                                    const rawValue = rowRecord[rawKey];
+                                    const numVal = typeof rawValue === 'number'
+                                        ? rawValue
+                                        : parseFloat(val.replace(',', '.'));
                                     const isHighlighted = highlightColumn === col.key;
                                     let colorClass = "text-center";
                                     const rowBgClass = rowIndex % 2 === 0 ? "bg-[#0a192f]" : "bg-[#0d1f38]";

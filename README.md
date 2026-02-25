@@ -82,8 +82,8 @@ Backend (`backend/.env.example`):
 
 O backend usa:
 
-- **Yahoo Finance** para commodities agrícolas, câmbio, índices e contratos futuros
-- **PTAX (BCB/OData)** para indicador oficial de dólar PTAX
+- **Yahoo Finance** para commodities agrícolas, DXY e contratos futuros de dólar (CME)
+- **AwesomeAPI** para câmbio (USD-BRL, PTAX, EUR-BRL, EUR-USD) e ouro (XAU-BRL)
 
 ### APIs utilizadas no projeto
 
@@ -95,6 +95,12 @@ Endpoints expostos pelo backend (`backend/server.js`) e consumidos pelo frontend
 - `GET /api/financeiro`
 - `GET /api/status`
 
+Formato de payload:
+
+- Campos formatados para exibição (`ult`, `max`, `min`, `fec`, `abe`, `dif`, `varPerc`)
+- Campos numéricos brutos correspondentes (`ultRaw`, `maxRaw`, `minRaw`, `fecRaw`, `abeRaw`, `difRaw`, `varPercRaw`)
+- No ouro (`XAU-BRL`), também são retornados campos por grama (`ultGrama`, `ultGramaRaw`, etc.)
+
 #### 2) APIs externas e fontes de mercado
 
 ##### Yahoo Finance (via biblioteca `yahoo-finance2` no backend)
@@ -105,19 +111,19 @@ Ativos consultados hoje no projeto:
   - `ZS=F` (Soja grão)
   - `ZM=F` (Farelo de soja)
   - `ZL=F` (Óleo de soja)
-- Câmbio e índices:
-  - `BRL=X` (USD/BRL comercial)
-  - `EURBRL=X` (EUR/BRL)
-  - `EURUSD=X` (base para cálculo de USD/EUR)
+- Índices:
   - `DX-Y.NYB` (DXY)
-  - `GC=F` (Ouro)
 - Dólar futuro:
   - CME: `6L{Mês}{Ano}.CME` (somente)
 
-##### PTAX (Banco Central do Brasil - OData)
+##### AwesomeAPI
 
-- Endpoint usado no backend para série diária da PTAX:
-  - `https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo(...)`
+- Endpoints usados no backend:
+  - `https://economia.awesomeapi.com.br/json/last/USD-BRL`
+  - `https://economia.awesomeapi.com.br/json/last/USD-BRLPTAX`
+  - `https://economia.awesomeapi.com.br/json/last/EUR-BRL`
+  - `https://economia.awesomeapi.com.br/json/last/EUR-USD`
+  - `https://economia.awesomeapi.com.br/json/last/XAU-BRL`
 
 Obs.: o backend atualiza e cacheia os dados periodicamente (polling), e o frontend consulta apenas as APIs internas acima.
 
@@ -126,7 +132,7 @@ Variáveis de ambiente suportadas no backend:
 - `PORT` (default: `3001`)
 - `SYNC_INTERVAL_MINUTES` (default: `15`)
 - `PROVIDER_TIMEOUT_MS` (default: `8000`)
-- `AGRI_TOTAL_CONTRACTS` (default: `3`, total de contratos por commodity, incluindo o atual)
+- `AGRI_TOTAL_CONTRACTS` (default: `15`, total de contratos por commodity, incluindo o atual)
 - `DOLAR_FUTURO_CONTRACT_COUNT` (default: `3`)
 
 Exemplo:

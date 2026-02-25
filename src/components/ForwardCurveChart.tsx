@@ -10,14 +10,16 @@ import {
 } from 'recharts';
 
 interface ForwardCurveChartProps {
-    data: { contrato: string; ult: string }[];
+    data?: { contrato: string; ult: string; ultRaw?: number | null }[];
 }
 
 export function ForwardCurveChart({ data }: ForwardCurveChartProps) {
+    const safeData = Array.isArray(data) ? data : [];
+
     // Parse values for the chart
-    const chartData = data.map(item => {
-        let price = 0;
-        if (item.ult && item.ult !== '-') {
+    const chartData = safeData.map(item => {
+        let price = typeof item.ultRaw === 'number' ? item.ultRaw : 0;
+        if (price === 0 && item.ult && item.ult !== '-') {
             // Convert localized string "1.153,75" to number 1153.75
             // Convert "59,34" to 59.34
             const cleanStr = item.ult.replace(/\./g, '').replace(',', '.');

@@ -17,7 +17,7 @@ services:
       - key: DOLAR_FUTURO_CONTRACT_COUNT
         value: 3
       - key: AGRI_TOTAL_CONTRACTS
-        value: 3
+        value: 15
       - key: PROVIDER_TIMEOUT_MS
         value: 8000
       - key: YAHOO_MIN_REQUEST_INTERVAL_MS

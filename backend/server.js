@@ -12,10 +12,12 @@ const PORT = process.env.PORT || 3001;
 const SYNC_INTERVAL_MINUTES = Number(process.env.SYNC_INTERVAL_MINUTES || 15);
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 8000);
 const DOLAR_FUTURO_CONTRACT_COUNT = Number(process.env.DOLAR_FUTURO_CONTRACT_COUNT || 3);
-const AGRI_TOTAL_CONTRACTS = Number(process.env.AGRI_TOTAL_CONTRACTS || 3);
+const AGRI_TOTAL_CONTRACTS = Number(process.env.AGRI_TOTAL_CONTRACTS || 15);
 const YAHOO_MIN_REQUEST_INTERVAL_MS = Number(process.env.YAHOO_MIN_REQUEST_INTERVAL_MS || 350);
 const YAHOO_MAX_RETRIES = Number(process.env.YAHOO_MAX_RETRIES || 3);
 const YAHOO_RETRY_BASE_DELAY_MS = Number(process.env.YAHOO_RETRY_BASE_DELAY_MS || 1200);
+const AWESOME_API_BASE_URL = process.env.AWESOME_API_BASE_URL || 'https://economia.awesomeapi.com.br/json/last';
+const TROY_OUNCE_IN_GRAMS = 31.1035;
 
 app.use(cors());
 
@@ -26,7 +28,7 @@ let cache = {
         oleoSoja: []
     },
     financeiro: [],
-    lastUpdated: null
+    lastValidSnapshotAt: null
 };
 
 const CONTRACT_MONTHS = {
@@ -53,6 +55,8 @@ const formatValue = (num, minimumFractionDigits = 2, maximumFractionDigits = 2) 
     if (num === null || num === undefined) return '-';
     return new Intl.NumberFormat('pt-BR', { minimumFractionDigits, maximumFractionDigits }).format(num);
 };
+
+const toRaw = (value) => (isValidNumber(value) ? value : null);
 
 const isValidNumber = (value) => typeof value === 'number' && Number.isFinite(value);
 
@@ -111,6 +115,7 @@ function extractHttpStatusFromError(error) {
 let yahooLastRequestAt = 0;
 let yahooRequestChain = Promise.resolve();
 let activeCycleStats = null;
+let activeCycleContext = null;
 
 function isYahooRateLimitError(error) {
     const message = String(error?.message || '').toLowerCase();
@@ -135,6 +140,22 @@ async function throttledYahooQuote(ticker) {
 }
 
 async function fetchYahooQuote(ticker) {
+    if (activeCycleContext?.yahooQuoteMemo?.has(ticker)) {
+        if (activeCycleStats) {
+            activeCycleStats.yahooDedupHits += 1;
+        }
+        return activeCycleContext.yahooQuoteMemo.get(ticker);
+    }
+
+    const fetchPromise = fetchYahooQuoteUncached(ticker);
+    if (activeCycleContext?.yahooQuoteMemo) {
+        activeCycleContext.yahooQuoteMemo.set(ticker, fetchPromise);
+    }
+
+    return fetchPromise;
+}
+
+async function fetchYahooQuoteUncached(ticker) {
     let lastError = null;
 
     for (let attempt = 0; attempt <= YAHOO_MAX_RETRIES; attempt += 1) {
@@ -231,6 +252,55 @@ function getValidMonths(baseSymbol) {
     return CONTRACT_MONTHS[baseSymbol] || CONTRACT_MONTHS.DEFAULT;
 }
 
+function getAwesomeQuoteEntry(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const [entry] = Object.values(payload);
+    return entry && typeof entry === 'object' ? entry : null;
+}
+
+async function fetchAwesomePairData(pair, eventOnError) {
+    const endpoint = `${AWESOME_API_BASE_URL}/${pair}`;
+
+    try {
+        const payload = await fetchJsonWithTimeout(endpoint, {
+            headers: { Accept: 'application/json' }
+        });
+
+        const quote = getAwesomeQuoteEntry(payload);
+        if (!quote) {
+            return null;
+        }
+
+        const price = firstValidNumber(quote.bid, quote.ask, quote.last, quote.high, quote.low, quote.open);
+        if (!isValidNumber(price)) {
+            return null;
+        }
+
+        const high = firstValidNumber(quote.high, price);
+        const low = firstValidNumber(quote.low, price);
+        const previousClose = firstValidNumber(quote.open, quote.bid, quote.ask, price);
+        const varPerc = firstValidNumber(quote.pctChange, quote.varBid, quote.variation);
+
+        return {
+            price,
+            varPerc: isValidNumber(varPerc)
+                ? varPerc
+                : (isValidNumber(previousClose) && previousClose !== 0 ? toPercent(price, previousClose) : 0),
+            high,
+            low,
+            previousClose
+        };
+    } catch (error) {
+        logEvent('error', eventOnError, {
+            cycleId: activeCycleStats?.cycleId || null,
+            pair,
+            endpoint,
+            message: toSafeErrorMessage(error)
+        });
+        return null;
+    }
+}
+
 function getCurrentContractTicker(baseSymbol) {
     const currentContract = getCurrentContractInfo(baseSymbol);
     return `${baseSymbol}${currentContract.c}${currentContract.year}.CBT`;
@@ -302,15 +372,27 @@ const fetchAgriData = async (ticker, baseSymbol, totalContracts = AGRI_TOTAL_CON
 
         const dif = quote.regularMarketChange || 0;
         const currentContract = getCurrentContractInfo(baseSymbol);
+        const currentPrice = toRaw(quote.regularMarketPrice);
+        const currentHigh = toRaw(quote.regularMarketDayHigh);
+        const currentLow = toRaw(quote.regularMarketDayLow);
+        const currentPreviousClose = toRaw(quote.regularMarketPreviousClose);
+        const currentOpen = toRaw(quote.regularMarketOpen);
+        const currentDif = toRaw(dif) ?? 0;
 
         const atual = {
             contrato: `${currentContract.n}/${currentContract.year} (${currentContract.c}) (Atual)`,
-            ult: formatValue(quote.regularMarketPrice),
-            max: formatValue(quote.regularMarketDayHigh),
-            min: formatValue(quote.regularMarketDayLow),
-            fec: formatValue(quote.regularMarketPreviousClose),
-            abe: formatValue(quote.regularMarketOpen),
-            dif: formatValue(dif)
+            ult: formatValue(currentPrice),
+            ultRaw: currentPrice,
+            max: formatValue(currentHigh),
+            maxRaw: currentHigh,
+            min: formatValue(currentLow),
+            minRaw: currentLow,
+            fec: formatValue(currentPreviousClose),
+            fecRaw: currentPreviousClose,
+            abe: formatValue(currentOpen),
+            abeRaw: currentOpen,
+            dif: formatValue(currentDif),
+            difRaw: currentDif
         };
 
         const futureTickers = getFutureTickers(baseSymbol, Math.max(0, totalContracts - 1));
@@ -324,14 +406,27 @@ const fetchAgriData = async (ticker, baseSymbol, totalContracts = AGRI_TOTAL_CON
                 }
 
                 const difFuturo = quoteFuturo.regularMarketChange || 0;
+                const futurePrice = toRaw(quoteFuturo.regularMarketPrice);
+                const futureHigh = toRaw(quoteFuturo.regularMarketDayHigh);
+                const futureLow = toRaw(quoteFuturo.regularMarketDayLow);
+                const futurePreviousClose = toRaw(quoteFuturo.regularMarketPreviousClose);
+                const futureOpen = toRaw(quoteFuturo.regularMarketOpen);
+                const futureDif = toRaw(difFuturo) ?? 0;
+
                 results.push({
                     contrato: ft.name,
-                    ult: formatValue(quoteFuturo.regularMarketPrice),
-                    max: formatValue(quoteFuturo.regularMarketDayHigh),
-                    min: formatValue(quoteFuturo.regularMarketDayLow),
-                    fec: formatValue(quoteFuturo.regularMarketPreviousClose),
-                    abe: formatValue(quoteFuturo.regularMarketOpen),
-                    dif: formatValue(difFuturo)
+                    ult: formatValue(futurePrice),
+                    ultRaw: futurePrice,
+                    max: formatValue(futureHigh),
+                    maxRaw: futureHigh,
+                    min: formatValue(futureLow),
+                    minRaw: futureLow,
+                    fec: formatValue(futurePreviousClose),
+                    fecRaw: futurePreviousClose,
+                    abe: formatValue(futureOpen),
+                    abeRaw: futureOpen,
+                    dif: formatValue(futureDif),
+                    difRaw: futureDif
                 });
             } catch (e) {
                 logEvent('error', 'agri_future_fetch_failed', {
@@ -362,14 +457,24 @@ const fetchFinanceData = async (ticker, name) => {
             return null;
         }
 
-        const varPerc = quote.regularMarketChangePercent || 0;
+        const price = toRaw(quote.regularMarketPrice);
+        const high = toRaw(quote.regularMarketDayHigh);
+        const low = toRaw(quote.regularMarketDayLow);
+        const previousClose = toRaw(quote.regularMarketPreviousClose);
+        const varPerc = toRaw(quote.regularMarketChangePercent) ?? 0;
+
         return {
             indice: name,
-            ult: formatValue(quote.regularMarketPrice),
+            ult: formatValue(price),
+            ultRaw: price,
             varPerc: formatValue(varPerc),
-            max: formatValue(quote.regularMarketDayHigh),
-            min: formatValue(quote.regularMarketDayLow),
-            fec: formatValue(quote.regularMarketPreviousClose)
+            varPercRaw: varPerc,
+            max: formatValue(high),
+            maxRaw: high,
+            min: formatValue(low),
+            minRaw: low,
+            fec: formatValue(previousClose),
+            fecRaw: previousClose
         };
     } catch (e) {
         logEvent('error', 'finance_fetch_failed', {
@@ -409,10 +514,15 @@ function normalizeUsdBrlFinanceiroRow(values) {
     return {
         indice: 'USD Comercial',
         ult: formatValue(values.price),
+        ultRaw: toRaw(values.price),
         varPerc: formatValue(values.varPerc),
+        varPercRaw: toRaw(values.varPerc),
         max: formatValue(values.high),
+        maxRaw: toRaw(values.high),
         min: formatValue(values.low),
-        fec: formatValue(values.previousClose)
+        minRaw: toRaw(values.low),
+        fec: formatValue(values.previousClose),
+        fecRaw: toRaw(values.previousClose)
     };
 }
 
@@ -420,10 +530,80 @@ function normalizeUsdBrlPtaxFinanceiroRow(values) {
     return {
         indice: 'Dólar PTAX',
         ult: formatValue(values.price),
+        ultRaw: toRaw(values.price),
         varPerc: formatValue(values.varPerc),
+        varPercRaw: toRaw(values.varPerc),
         max: formatValue(values.high),
+        maxRaw: toRaw(values.high),
         min: formatValue(values.low),
-        fec: formatValue(values.previousClose)
+        minRaw: toRaw(values.low),
+        fec: formatValue(values.previousClose),
+        fecRaw: toRaw(values.previousClose)
+    };
+}
+
+function normalizeEurBrlFinanceiroRow(values) {
+    return {
+        indice: 'Real / Euro',
+        ult: formatValue(values.price),
+        ultRaw: toRaw(values.price),
+        varPerc: formatValue(values.varPerc),
+        varPercRaw: toRaw(values.varPerc),
+        max: formatValue(values.high),
+        maxRaw: toRaw(values.high),
+        min: formatValue(values.low),
+        minRaw: toRaw(values.low),
+        fec: formatValue(values.previousClose),
+        fecRaw: toRaw(values.previousClose)
+    };
+}
+
+function normalizeEurUsdFinanceiroRow(values) {
+    return {
+        indice: 'Dólar/Euro (EUR-USD)',
+        ult: formatValue(values.price, 4, 4),
+        ultRaw: toRaw(values.price),
+        varPerc: formatValue(values.varPerc),
+        varPercRaw: toRaw(values.varPerc),
+        max: formatValue(values.high, 4, 4),
+        maxRaw: toRaw(values.high),
+        min: formatValue(values.low, 4, 4),
+        minRaw: toRaw(values.low),
+        fec: formatValue(values.previousClose, 4, 4),
+        fecRaw: toRaw(values.previousClose)
+    };
+}
+
+function normalizeXauBrlFinanceiroRow(values) {
+    const toGram = (value) => (isValidNumber(value) ? value / TROY_OUNCE_IN_GRAMS : null);
+    const priceGram = toGram(values.price);
+    const highGram = toGram(values.high);
+    const lowGram = toGram(values.low);
+    const previousCloseGram = toGram(values.previousClose);
+    const varPercGram = isValidNumber(priceGram) && isValidNumber(previousCloseGram) && previousCloseGram !== 0
+        ? toPercent(priceGram, previousCloseGram)
+        : (isValidNumber(values.varPerc) ? values.varPerc : 0);
+
+    return {
+        indice: 'Ouro (XAU-BRL, por grama)',
+        ult: formatValue(priceGram, 4, 4),
+        ultRaw: toRaw(priceGram),
+        varPerc: formatValue(varPercGram),
+        varPercRaw: toRaw(varPercGram),
+        max: formatValue(highGram, 4, 4),
+        maxRaw: toRaw(highGram),
+        min: formatValue(lowGram, 4, 4),
+        minRaw: toRaw(lowGram),
+        fec: formatValue(previousCloseGram, 4, 4),
+        fecRaw: toRaw(previousCloseGram),
+        ultGrama: formatValue(priceGram, 4, 4),
+        ultGramaRaw: toRaw(priceGram),
+        maxGrama: formatValue(highGram, 4, 4),
+        maxGramaRaw: toRaw(highGram),
+        minGrama: formatValue(lowGram, 4, 4),
+        minGramaRaw: toRaw(lowGram),
+        fecGrama: formatValue(previousCloseGram, 4, 4),
+        fecGramaRaw: toRaw(previousCloseGram)
     };
 }
 
@@ -431,89 +611,23 @@ function normalizeDolarFuturoFinanceiroRow(label, values) {
     return {
         indice: `Dólar Futuro ${label}`,
         ult: formatValue(values.price, 4, 4),
+        ultRaw: toRaw(values.price),
         varPerc: formatValue(values.varPerc),
+        varPercRaw: toRaw(values.varPerc),
         max: formatValue(values.high, 4, 4),
+        maxRaw: toRaw(values.high),
         min: formatValue(values.low, 4, 4),
-        fec: formatValue(values.previousClose, 4, 4)
+        minRaw: toRaw(values.low),
+        fec: formatValue(values.previousClose, 4, 4),
+        fecRaw: toRaw(values.previousClose)
     };
 }
 
-function getBcbPtaxDateQuery(date) {
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}-${day}-${year}`;
-}
-
-async function fetchPtaxQuotesForDate(date) {
-    const dateQuery = getBcbPtaxDateQuery(date);
-    const endpoint = `https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@dataInicial='${dateQuery}'&@dataFinalCotacao='${dateQuery}'&$format=json`;
-
-    try {
-        const payload = await fetchJsonWithTimeout(endpoint, {
-            headers: { Accept: 'application/json' }
-        });
-
-        const rows = Array.isArray(payload?.value) ? payload.value : [];
-        if (!rows.length) {
-            return null;
-        }
-
-        const prices = rows
-            .map(item => firstValidNumber(item?.cotacaoVenda, item?.cotacaoCompra))
-            .filter(isValidNumber);
-
-        if (!prices.length) {
-            return null;
-        }
-
-        return {
-            price: prices[prices.length - 1],
-            high: Math.max(...prices),
-            low: Math.min(...prices)
-        };
-    } catch (error) {
-        logEvent('warn', 'ptax_fetch_failed', {
-            cycleId: activeCycleStats?.cycleId || null,
-            dateQuery,
-            message: toSafeErrorMessage(error)
-        });
-        return null;
-    }
-}
-
 async function fetchUsdBrlPtaxData(spotFallback = null) {
-    const now = new Date();
-    const currentDayData = await fetchPtaxQuotesForDate(now);
+    const ptaxData = await fetchAwesomePairData('USD-BRLPTAX', 'ptax_awesome_fetch_failed');
 
-    if (currentDayData) {
-        let previousClose = null;
-
-        for (let dayOffset = 1; dayOffset <= 7; dayOffset += 1) {
-            const previousDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOffset);
-            const previousDayData = await fetchPtaxQuotesForDate(previousDate);
-
-            if (previousDayData && isValidNumber(previousDayData.price)) {
-                previousClose = previousDayData.price;
-                break;
-            }
-        }
-
-        if (!isValidNumber(previousClose) && spotFallback && isValidNumber(spotFallback.previousClose)) {
-            previousClose = spotFallback.previousClose;
-        }
-
-        const varPerc = isValidNumber(previousClose)
-            ? toPercent(currentDayData.price, previousClose)
-            : 0;
-
-        return {
-            price: currentDayData.price,
-            varPerc,
-            high: currentDayData.high,
-            low: currentDayData.low,
-            previousClose
-        };
+    if (ptaxData) {
+        return ptaxData;
     }
 
     if (spotFallback && isValidNumber(spotFallback.price)) {
@@ -527,72 +641,6 @@ async function fetchUsdBrlPtaxData(spotFallback = null) {
     }
 
     return null;
-}
-
-async function fetchDolarFuturoB3(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
-    const lookupWindow = Math.max(monthsAhead * 2, monthsAhead);
-    const contracts = getNextFinancialContracts(lookupWindow);
-    const results = [];
-
-    for (const contract of contracts) {
-        if (results.length >= monthsAhead) {
-            break;
-        }
-
-        const ticker = `DOL${contract.code}${contract.year}.SA`;
-
-        try {
-            const quote = await fetchYahooQuote(ticker);
-            if (!quote) {
-                continue;
-            }
-
-            const price = firstValidNumber(
-                quote.regularMarketPrice,
-                quote.postMarketPrice,
-                quote.preMarketPrice,
-                quote.regularMarketPreviousClose
-            );
-
-            if (!isValidNumber(price)) {
-                logEvent('warn', 'dolar_futuro_no_usable_price', {
-                    cycleId: activeCycleStats?.cycleId || null,
-                    ticker,
-                    regularMarketPrice: toNumberOrNull(quote.regularMarketPrice),
-                    regularMarketPreviousClose: toNumberOrNull(quote.regularMarketPreviousClose)
-                });
-                continue;
-            }
-
-            const previousClose = firstValidNumber(
-                quote.regularMarketPreviousClose,
-                quote.regularMarketPrice,
-                quote.postMarketPrice,
-                quote.preMarketPrice
-            );
-            const high = firstValidNumber(quote.regularMarketDayHigh, price);
-            const low = firstValidNumber(quote.regularMarketDayLow, price);
-            const varPerc = isValidNumber(quote.regularMarketChangePercent)
-                ? quote.regularMarketChangePercent
-                : (isValidNumber(previousClose) && previousClose !== 0 ? toPercent(price, previousClose) : 0);
-
-            results.push(normalizeDolarFuturoFinanceiroRow(contract.label, {
-                price,
-                varPerc,
-                high,
-                low,
-                previousClose
-            }));
-        } catch (e) {
-            logEvent('error', 'dolar_futuro_fetch_failed', {
-                cycleId: activeCycleStats?.cycleId || null,
-                ticker,
-                message: toSafeErrorMessage(e)
-            });
-        }
-    }
-
-    return results;
 }
 
 async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
@@ -655,69 +703,23 @@ async function fetchDolarFuturoCme(monthsAhead = DOLAR_FUTURO_CONTRACT_COUNT) {
     return results;
 }
 
-async function fetchUsdBrlSpotFallback() {
-    try {
-        const quote = await fetchYahooQuote('BRL=X');
-
-        if (!quote || !isValidNumber(quote.regularMarketPrice)) {
-            return null;
-        }
-
-        return {
-            price: quote.regularMarketPrice,
-            varPerc: quote.regularMarketChangePercent || 0,
-            high: quote.regularMarketDayHigh,
-            low: quote.regularMarketDayLow,
-            previousClose: quote.regularMarketPreviousClose
-        };
-    } catch (e) {
-        logEvent('error', 'usd_brl_fallback_failed', {
-            cycleId: activeCycleStats?.cycleId || null,
-            ticker: 'BRL=X',
-            message: toSafeErrorMessage(e)
-        });
-        return null;
-    }
-}
-
 async function fetchUsdBrlSpotData() {
-    return fetchUsdBrlSpotFallback();
+    return fetchAwesomePairData('USD-BRL', 'usd_brl_spot_fetch_failed');
 }
 
 async function fetchUsdEurData() {
-    try {
-        const quote = await fetchYahooQuote('EURUSD=X');
+    const eurUsd = await fetchAwesomePairData('EUR-USD', 'eur_usd_fetch_failed');
+    return eurUsd ? normalizeEurUsdFinanceiroRow(eurUsd) : null;
+}
 
-        if (!quote || !isValidNumber(quote.regularMarketPrice)) {
-            return null;
-        }
+async function fetchEurBrlData() {
+    const eurBrl = await fetchAwesomePairData('EUR-BRL', 'eur_brl_fetch_failed');
+    return eurBrl ? normalizeEurBrlFinanceiroRow(eurBrl) : null;
+}
 
-        const eurUsd = quote.regularMarketPrice;
-        const eurUsdPrev = quote.regularMarketPreviousClose;
-        const eurUsdHigh = quote.regularMarketDayHigh;
-        const eurUsdLow = quote.regularMarketDayLow;
-
-        const usdEur = 1 / eurUsd;
-        const usdEurPrev = isValidNumber(eurUsdPrev) ? 1 / eurUsdPrev : null;
-        const usdEurHigh = isValidNumber(eurUsdLow) ? 1 / eurUsdLow : null;
-        const usdEurLow = isValidNumber(eurUsdHigh) ? 1 / eurUsdHigh : null;
-
-        return {
-            indice: 'Dólar / Euro',
-            ult: formatValue(usdEur, 4, 4),
-            varPerc: formatValue(usdEurPrev ? toPercent(usdEur, usdEurPrev) : 0),
-            max: formatValue(usdEurHigh, 4, 4),
-            min: formatValue(usdEurLow, 4, 4),
-            fec: formatValue(usdEurPrev, 4, 4)
-        };
-    } catch (e) {
-        logEvent('error', 'usd_eur_fetch_failed', {
-            cycleId: activeCycleStats?.cycleId || null,
-            ticker: 'EURUSD=X',
-            message: toSafeErrorMessage(e)
-        });
-        return null;
-    }
+async function fetchXauBrlData() {
+    const xauBrl = await fetchAwesomePairData('XAU-BRL', 'xau_brl_fetch_failed');
+    return xauBrl ? normalizeXauBrlFinanceiroRow(xauBrl) : null;
 }
 
 async function fetchDolarFuturoFinanceiroRows(count = DOLAR_FUTURO_CONTRACT_COUNT) {
@@ -725,7 +727,7 @@ async function fetchDolarFuturoFinanceiroRows(count = DOLAR_FUTURO_CONTRACT_COUN
 }
 
 function buildPlannedYahooSymbols() {
-    const financialSymbols = ['EURBRL=X', 'EURUSD=X', 'DX-Y.NYB', 'GC=F', 'BRL=X'];
+    const financialSymbols = ['DX-Y.NYB'];
     const agriSpots = ['ZS=F', 'ZM=F', 'ZL=F'];
     const agriFutures = ['ZS', 'ZM', 'ZL']
         .flatMap(baseSymbol => getFutureTickers(baseSymbol, Math.max(0, AGRI_TOTAL_CONTRACTS - 1)).map(item => item.ticker));
@@ -759,7 +761,11 @@ const updateCache = async () => {
         yahooSuccess: 0,
         yahooFailures: 0,
         yahooRetries: 0,
-        yahoo429: 0
+        yahoo429: 0,
+        yahooDedupHits: 0
+    };
+    activeCycleContext = {
+        yahooQuoteMemo: new Map()
     };
 
     logEvent('info', 'cache_update_started', {
@@ -778,31 +784,53 @@ const updateCache = async () => {
         const fareloSoja = await fetchAgriData('ZM=F', 'ZM', AGRI_TOTAL_CONTRACTS);
         const oleoSoja = await fetchAgriData('ZL=F', 'ZL', AGRI_TOTAL_CONTRACTS);
         const dolarFuturo = await fetchDolarFuturoFinanceiroRows(DOLAR_FUTURO_CONTRACT_COUNT);
-
-        const financeiroResults = [];
-        financeiroResults.push(await fetchFinanceData('EURBRL=X', 'Real / Euro'));
-        financeiroResults.push(await fetchUsdEurData());
-        financeiroResults.push(await fetchFinanceData('DX-Y.NYB', 'DXY'));
-        financeiroResults.push(await fetchFinanceData('GC=F', 'GOLD'));
+        const eurBrl = await fetchEurBrlData();
+        const eurUsd = await fetchUsdEurData();
+        const dxy = await fetchFinanceData('DX-Y.NYB', 'DXY');
+        const xauBrl = await fetchXauBrlData();
 
         const usdFinanceRow = usdSpot
             ? normalizeUsdBrlFinanceiroRow(usdSpot)
-            : await fetchFinanceData('BRL=X', 'USD Comercial');
+            : null;
 
         const financeiro = [
             usdPtax ? normalizeUsdBrlPtaxFinanceiroRow(usdPtax) : null,
             usdFinanceRow,
+            eurBrl,
+            eurUsd,
+            xauBrl,
             ...dolarFuturo,
-            ...financeiroResults
+            dxy
         ].filter(r => r !== null);
 
-        cache.agricola = {
+        const nextAgricola = {
             sojaGrao: sojaGrao.length ? sojaGrao : cache.agricola.sojaGrao,
             fareloSoja: fareloSoja.length ? fareloSoja : cache.agricola.fareloSoja,
             oleoSoja: oleoSoja.length ? oleoSoja : cache.agricola.oleoSoja
         };
-        cache.financeiro = financeiro.length ? financeiro : cache.financeiro;
-        cache.lastUpdated = new Date();
+
+        const nextFinanceiro = financeiro.length ? financeiro : cache.financeiro;
+
+        const hasAllAgricolaData = nextAgricola.sojaGrao.length > 0
+            && nextAgricola.fareloSoja.length > 0
+            && nextAgricola.oleoSoja.length > 0;
+        const hasFinanceiroData = nextFinanceiro.length > 0;
+        const canCommitSnapshot = hasAllAgricolaData && hasFinanceiroData;
+
+        if (canCommitSnapshot) {
+            const now = new Date();
+            cache.agricola = nextAgricola;
+            cache.financeiro = nextFinanceiro;
+            cache.lastValidSnapshotAt = now;
+        } else {
+            logEvent('warn', 'cache_snapshot_fallback_used', {
+                cycleId,
+                reason: 'incomplete_data',
+                hasAllAgricolaData,
+                hasFinanceiroData,
+                lastValidSnapshotAt: cache.lastValidSnapshotAt ? cache.lastValidSnapshotAt.toISOString() : null
+            });
+        }
 
         logEvent('info', 'cache_update_finished', {
             cycleId,
@@ -812,22 +840,31 @@ const updateCache = async () => {
             yahooFailures: activeCycleStats?.yahooFailures || 0,
             yahooRetries: activeCycleStats?.yahooRetries || 0,
             yahoo429: activeCycleStats?.yahoo429 || 0,
+            yahooDedupHits: activeCycleStats?.yahooDedupHits || 0,
             financeiroRows: cache.financeiro.length,
             sojaContracts: cache.agricola.sojaGrao.length,
             fareloContracts: cache.agricola.fareloSoja.length,
             oleoContracts: cache.agricola.oleoSoja.length
         });
     } catch (e) {
+        logEvent('warn', 'cache_snapshot_fallback_used', {
+            cycleId,
+            reason: 'provider_error',
+            message: toSafeErrorMessage(e),
+            lastValidSnapshotAt: cache.lastValidSnapshotAt ? cache.lastValidSnapshotAt.toISOString() : null
+        });
         logEvent('error', 'cache_update_failed', {
             cycleId,
             durationMs: Date.now() - startedAt,
             message: toSafeErrorMessage(e),
             yahooRequests: activeCycleStats?.yahooRequests || 0,
             yahooRetries: activeCycleStats?.yahooRetries || 0,
-            yahoo429: activeCycleStats?.yahoo429 || 0
+            yahoo429: activeCycleStats?.yahoo429 || 0,
+            yahooDedupHits: activeCycleStats?.yahooDedupHits || 0
         });
     } finally {
         activeCycleStats = null;
+        activeCycleContext = null;
         updateCache.isRunning = false;
         updateCache.currentCycleId = null;
         updateCache.startedAt = null;
@@ -851,7 +888,7 @@ app.get('/api/financeiro', (req, res) => {
 
 app.get('/api/status', (req, res) => {
     res.json({
-        lastUpdated: cache.lastUpdated ? cache.lastUpdated.toISOString() : null,
+        lastUpdated: cache.lastValidSnapshotAt ? cache.lastValidSnapshotAt.toISOString() : null,
         syncIntervalMinutes: SYNC_INTERVAL_MINUTES
     });
 });
